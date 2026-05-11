@@ -217,3 +217,100 @@ export function parseEvent(line: string): ParsedEvent {
     raw,
   };
 }
+
+// ── Version detection ─────────────────────────────────────────
+
+export interface Semver {
+  major: number;
+  minor: number;
+  patch: number;
+}
+
+/** Minimum rig version this spawn release requires. Bumped any time
+ * spawn starts using a new rig surface. */
+export const RIG_MIN_VERSION: Semver = {
+  major: 0,
+  minor: 4,
+  patch: 0,
+};
+
+/** Parse `rig --version` output. Accepts `rigbox X.Y.Z` and
+ * `rigbox-cli X.Y.Z` shapes (clap default prepends the package name). */
+export function parseSemver(out: string): Semver | null {
+  const match = out.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match || !match[1] || !match[2] || !match[3]) {
+    return null;
+  }
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+    patch: Number.parseInt(match[3], 10),
+  };
+}
+
+/** Return >0 if a > b, <0 if a < b, 0 if equal. */
+export function compareSemver(a: Semver, b: Semver): number {
+  if (a.major !== b.major) {
+    return a.major - b.major;
+  }
+  if (a.minor !== b.minor) {
+    return a.minor - b.minor;
+  }
+  return a.patch - b.patch;
+}
+
+export class RigVersionError extends Error {
+  constructor(
+    public readonly found: Semver | null,
+    public readonly required: Semver,
+  ) {
+    const foundStr = found ? `${found.major}.${found.minor}.${found.patch}` : "unknown";
+    const reqStr = `${required.major}.${required.minor}.${required.patch}`;
+    super(
+      `spawn-rigbox needs rig >= ${reqStr} (found ${foundStr}).\n` +
+        "Upgrade: curl -fsSL https://rigbox.dev/install.sh | sh",
+    );
+    this.name = "RigVersionError";
+  }
+}
+
+/** Run `rig --version` and throw if older than RIG_MIN_VERSION.
+ * Cached after first call within the same process. */
+let _versionChecked = false;
+export async function checkRigVersion(rigPath = "rig"): Promise<void> {
+  if (_versionChecked) {
+    return;
+  }
+  const spawnResult = tryCatch(() =>
+    Bun.spawnSync(
+      [
+        rigPath,
+        "--version",
+      ],
+      {
+        stdio: [
+          "ignore",
+          "pipe",
+          "pipe",
+        ],
+      },
+    ),
+  );
+
+  if (!spawnResult.ok) {
+    throw new RigVersionError(null, RIG_MIN_VERSION);
+  }
+
+  const proc = spawnResult.data;
+  const out = new TextDecoder().decode(proc.stdout);
+  const found = parseSemver(out);
+  if (!found || compareSemver(found, RIG_MIN_VERSION) < 0) {
+    throw new RigVersionError(found, RIG_MIN_VERSION);
+  }
+  _versionChecked = true;
+}
+
+/** Test helper to reset the cache. Production code never calls this. */
+export function _resetVersionCheckCache(): void {
+  _versionChecked = false;
+}

@@ -1,6 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import * as v from "valibot";
-import { ErrorEventSchema, LoginEventSchema, parseEvent, SpawnEventSchema, WhoamiSchema } from "../rigbox/rig-runner";
+import {
+  _resetVersionCheckCache,
+  checkRigVersion,
+  compareSemver,
+  ErrorEventSchema,
+  LoginEventSchema,
+  parseEvent,
+  parseSemver,
+  RIG_MIN_VERSION,
+  RigVersionError,
+  SpawnEventSchema,
+  WhoamiSchema,
+} from "../rigbox/rig-runner";
+import { asyncTryCatch } from "../shared/result.js";
 
 describe("RigEvent schemas", () => {
   test("LoginEvent parses session_created", () => {
@@ -86,5 +99,58 @@ describe("RigEvent schemas", () => {
 
     const spawn = parseEvent('{"event":"creating","name":"my-ws"}');
     expect(spawn.kind).toBe("spawn");
+  });
+});
+
+describe("checkRigVersion semver helpers", () => {
+  test("parseSemver extracts version from `rig --version` output", () => {
+    expect(parseSemver("rigbox 0.4.0\n")).toEqual({
+      major: 0,
+      minor: 4,
+      patch: 0,
+    });
+    expect(parseSemver("rigbox-cli 1.10.3")).toEqual({
+      major: 1,
+      minor: 10,
+      patch: 3,
+    });
+  });
+
+  test("parseSemver returns null on garbage", () => {
+    expect(parseSemver("")).toBeNull();
+    expect(parseSemver("not a version")).toBeNull();
+  });
+
+  test("compareSemver orders correctly", () => {
+    const a = parseSemver("rigbox 0.4.0")!;
+    const b = parseSemver("rigbox 0.3.5")!;
+    expect(compareSemver(a, b)).toBeGreaterThan(0);
+    expect(compareSemver(b, a)).toBeLessThan(0);
+    expect(compareSemver(a, a)).toBe(0);
+  });
+
+  test("compareSemver handles patch differences", () => {
+    const a = parseSemver("rigbox 0.4.10")!;
+    const b = parseSemver("rigbox 0.4.2")!;
+    expect(compareSemver(a, b)).toBeGreaterThan(0);
+  });
+
+  test("RIG_MIN_VERSION is 0.4.0", () => {
+    expect(RIG_MIN_VERSION).toEqual({
+      major: 0,
+      minor: 4,
+      patch: 0,
+    });
+  });
+});
+
+describe("checkRigVersion", () => {
+  test("throws RigVersionError when rig binary is missing", async () => {
+    _resetVersionCheckCache();
+    const r = await asyncTryCatch(() => checkRigVersion("/nonexistent/rig-binary-xyz"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toBeInstanceOf(RigVersionError);
+    }
   });
 });
