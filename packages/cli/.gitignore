@@ -9,4 +9,5 @@ digitalocean.js
 gcp.js
 hetzner.js
 local.js
+rigbox.js
 sprite.js

@@ -30,7 +30,8 @@
       "icon": "https://raw.githubusercontent.com/OpenRouterTeam/spawn/main/assets/agents/claude.png",
       "featured_cloud": [
         "digitalocean",
-        "sprite"
+        "sprite",
+        "rigbox"
       ],
       "creator": "Anthropic",
       "repo": "anthropics/claude-code",
@@ -70,7 +71,8 @@
       "icon": "https://raw.githubusercontent.com/OpenRouterTeam/spawn/main/assets/agents/openclaw.png",
       "featured_cloud": [
         "digitalocean",
-        "sprite"
+        "sprite",
+        "rigbox"
       ],
       "creator": "OpenClaw",
       "repo": "openclaw/openclaw",
@@ -104,7 +106,8 @@
       "icon": "https://raw.githubusercontent.com/OpenRouterTeam/spawn/main/assets/agents/codex.png",
       "featured_cloud": [
         "digitalocean",
-        "sprite"
+        "sprite",
+        "rigbox"
       ],
       "creator": "OpenAI",
       "repo": "openai/codex",
@@ -136,7 +139,8 @@
       "icon": "https://raw.githubusercontent.com/OpenRouterTeam/spawn/main/assets/agents/opencode.png",
       "featured_cloud": [
         "digitalocean",
-        "sprite"
+        "sprite",
+        "rigbox"
       ],
       "creator": "SST",
       "repo": "sst/opencode",
@@ -170,7 +174,8 @@
       "icon": "https://raw.githubusercontent.com/OpenRouterTeam/spawn/main/assets/agents/kilocode.png",
       "featured_cloud": [
         "digitalocean",
-        "sprite"
+        "sprite",
+        "rigbox"
       ],
       "creator": "Kilo-Org",
       "repo": "Kilo-Org/kilocode",
@@ -205,7 +210,8 @@
       "icon": "https://raw.githubusercontent.com/OpenRouterTeam/spawn/main/assets/agents/hermes.png",
       "featured_cloud": [
         "digitalocean",
-        "sprite"
+        "sprite",
+        "rigbox"
       ],
       "creator": "Nous Research",
       "repo": "NousResearch/hermes-agent",
