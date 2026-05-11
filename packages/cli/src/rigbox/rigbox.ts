@@ -714,9 +714,10 @@ async function runRigCommand(args: string[]): Promise<void> {
  * recipe's /etc/profile.d/<agent>-routing.sh translates this into the
  * agent's expected env shape (ANTHROPIC_*, OPENAI_*, KILO_*, native).
  *
- * Delegates to `rig env set` so the CLI is the single source of truth
- * for the env-update contract — spawn no longer duplicates the REST
- * call.
+ * Forwarding a key is just BYOK with OPENROUTER_BASE_URL +
+ * OPENROUTER_API_KEY set, plus `rig ai mode byok` to flip the
+ * server-side workspace mode. Two sequential CLI calls; if the env-set
+ * fails we never touch the mode.
  */
 export async function setForwardedOpenRouterKey(openRouterKey: string): Promise<void> {
   if (!_state.workspaceId) {
@@ -726,6 +727,14 @@ export async function setForwardedOpenRouterKey(openRouterKey: string): Promise<
     "env",
     "set",
     `OPENROUTER_API_KEY=${openRouterKey}`,
+    "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1",
+    "-w",
+    _state.workspaceId,
+  ]);
+  await runRigCommand([
+    "ai",
+    "mode",
+    "byok",
     "-w",
     _state.workspaceId,
   ]);
@@ -734,7 +743,7 @@ export async function setForwardedOpenRouterKey(openRouterKey: string): Promise<
 /**
  * Switch the workspace's AI config to Rigbox's managed proxy.
  *
- * Delegates to `rig ai managed on` so the CLI owns the ai-config
+ * Delegates to `rig ai mode managed` so the CLI owns the ai-config
  * contract; spawn just records the mode locally for downstream branches
  * (e.g. env-injection ordering in main.ts).
  */
@@ -744,8 +753,8 @@ export async function enableManagedProxy(): Promise<void> {
   }
   await runRigCommand([
     "ai",
+    "mode",
     "managed",
-    "on",
     "-w",
     _state.workspaceId,
   ]);
