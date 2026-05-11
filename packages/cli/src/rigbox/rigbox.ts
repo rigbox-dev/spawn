@@ -35,7 +35,15 @@ import {
   sanitizeTermValue,
   shellQuote,
 } from "../shared/ui.js";
-import { checkRigVersion, runRig, streamRig, WhoamiSchema } from "./rig-runner.js";
+import {
+  AiModeSchema,
+  checkRigVersion,
+  EnvSetSchema,
+  RmSchema,
+  runRig,
+  streamRig,
+  WhoamiSchema,
+} from "./rig-runner.js";
 
 // ── Module state ────────────────────────────────────────────────────
 
@@ -258,37 +266,6 @@ export async function createWorkspace(name: string, recipeId: string | undefined
 }
 
 /**
- * Shell out to the rig CLI with the given argv. Arguments are passed as
- * separate argv items (never interpolated into a shell string) so values
- * containing shell metacharacters can't be reinterpreted. On nonzero
- * exit, throws with rig's stderr prefix so the user sees the real cause.
- */
-async function runRigCommand(args: string[]): Promise<void> {
-  const rig = getRigCmd();
-  if (!rig) {
-    throw new Error("rig CLI not found — install with: curl -fsSL https://rigbox.dev/install.sh | sh");
-  }
-  const proc = Bun.spawn(
-    [
-      rig,
-      ...args,
-    ],
-    {
-      stdio: [
-        "ignore",
-        "pipe",
-        "pipe",
-      ],
-    },
-  );
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    const stderrText = await new Response(proc.stderr).text();
-    throw new Error(`Rigbox config update failed: ${stderrText.slice(0, 256)}`);
-  }
-}
-
-/**
  * Forward the user's OpenRouter API key into the workspace env. Called
  * after createServer in the default (non-managed) flow. The catalog
  * recipe's /etc/profile.d/<agent>-routing.sh translates this into the
@@ -303,21 +280,27 @@ export async function setForwardedOpenRouterKey(openRouterKey: string): Promise<
   if (!_state.workspaceId) {
     throw new Error("Workspace not yet created");
   }
-  await runRigCommand([
-    "env",
-    "set",
-    `OPENROUTER_API_KEY=${openRouterKey}`,
-    "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1",
-    "-w",
-    _state.workspaceId,
-  ]);
-  await runRigCommand([
-    "ai",
-    "mode",
-    "byok",
-    "-w",
-    _state.workspaceId,
-  ]);
+  await runRig(
+    [
+      "env",
+      "set",
+      `OPENROUTER_API_KEY=${openRouterKey}`,
+      "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1",
+      "-w",
+      _state.workspaceId,
+    ],
+    EnvSetSchema,
+  );
+  await runRig(
+    [
+      "ai",
+      "mode",
+      "byok",
+      "-w",
+      _state.workspaceId,
+    ],
+    AiModeSchema,
+  );
 }
 
 /**
@@ -331,13 +314,16 @@ export async function enableManagedProxy(): Promise<void> {
   if (!_state.workspaceId) {
     throw new Error("Workspace not yet created");
   }
-  await runRigCommand([
-    "ai",
-    "mode",
-    "managed",
-    "-w",
-    _state.workspaceId,
-  ]);
+  await runRig(
+    [
+      "ai",
+      "mode",
+      "managed",
+      "-w",
+      _state.workspaceId,
+    ],
+    AiModeSchema,
+  );
   _state.managedMode = true;
 }
 
@@ -349,15 +335,22 @@ export function isManagedMode(): boolean {
   return _state.managedMode;
 }
 
-/** Delete the workspace (called by `spawn delete`).
- *
- * TODO(Task 9): migrate to `rig rm --output json`. */
+/** Delete the workspace (called by `spawn delete`). */
 export async function destroyWorkspace(name?: string): Promise<void> {
-  throw new Error(
-    "destroyWorkspace() is not yet migrated — direct API calls removed. " +
-      "This is a Task 9 migration marker. name=" +
-      (name ?? _state.workspaceName),
+  const target = name || _state.workspaceName;
+  if (!target) {
+    throw new Error("destroyWorkspace: no workspace name in state");
+  }
+  await runRig(
+    [
+      "rm",
+      target,
+      "--force",
+    ],
+    RmSchema,
   );
+  logStepDone();
+  logInfo(`Workspace ${target} deleted`);
 }
 
 // ── Connection + SSH ────────────────────────────────────────────────
