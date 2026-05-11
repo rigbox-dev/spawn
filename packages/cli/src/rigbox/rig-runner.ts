@@ -438,3 +438,84 @@ export async function* parseLines(stream: ReadableStream<Uint8Array>): AsyncIter
     yield parseEvent(tail);
   }
 }
+
+// ── Single-event helper ───────────────────────────────────────
+
+/** Convenience wrapper for single-event commands (whoami, env set, ai
+ * mode, rm, ssh-info). Runs the command, collects the last non-error
+ * NDJSON line, validates it against the supplied schema, and returns
+ * the parsed payload. Errors from rig (non-zero exit) propagate as
+ * RigError unchanged. */
+export async function runRig<TSchema extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
+  args: string[],
+  schema: TSchema,
+  options: StreamRigOptions = {},
+): Promise<v.InferOutput<TSchema>> {
+  const rigPath = options.rigPath ?? "rig";
+  const fullArgs = [
+    ...args,
+    "--output",
+    "json",
+  ];
+  const proc: Bun.Subprocess<"inherit", "pipe", "inherit"> = Bun.spawn(
+    [
+      rigPath,
+      ...fullArgs,
+    ],
+    {
+      stdio: [
+        "inherit",
+        "pipe",
+        "inherit",
+      ],
+      env: {
+        ...process.env,
+        ...options.env,
+      },
+    },
+  );
+
+  let lastNonError: unknown = null;
+  let lastError: ErrorEvent | null = null;
+
+  for await (const ev of parseLines(proc.stdout)) {
+    const parsed = v.safeParse(ErrorEventSchema, ev.kind === "unknown" ? ev.raw : ev.data);
+    if (parsed.success) {
+      lastError = parsed.output;
+    } else if (ev.kind !== "error") {
+      lastNonError = ev.kind === "unknown" ? ev.raw : ev.data;
+    }
+  }
+
+  const exitCode = await proc.exited;
+
+  if (exitCode === 2) {
+    throw makeRigError(
+      lastError?.code ?? "auth_expired",
+      lastError?.message ?? "Your rigbox login expired. Run `rig login` and try again.",
+      2,
+    );
+  }
+
+  if (exitCode !== 0) {
+    if (lastError) {
+      throw makeRigError(lastError.code, lastError.message, exitCode);
+    }
+    throw makeRigError("internal", `rig exited with code ${exitCode}`, exitCode);
+  }
+
+  if (lastNonError === null) {
+    throw makeRigError("internal", `rig ${args.join(" ")} produced no output events`, 0);
+  }
+
+  const parsedSchema = v.safeParse(schema, lastNonError);
+  if (!parsedSchema.success) {
+    throw makeRigError(
+      "internal",
+      `rig ${args.join(" ")} returned an unexpected shape: ${JSON.stringify(lastNonError).slice(0, 256)}`,
+      0,
+    );
+  }
+
+  return parsedSchema.output;
+}

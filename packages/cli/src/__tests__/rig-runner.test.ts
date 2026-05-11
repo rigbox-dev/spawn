@@ -14,6 +14,7 @@ import {
   parseSemver,
   RIG_MIN_VERSION,
   RigVersionError,
+  runRig,
   SpawnEventSchema,
   streamRig,
   WhoamiSchema,
@@ -301,6 +302,62 @@ describe("streamRig with fake-rig", () => {
       }
     };
     await expect(run()).rejects.toThrow(/Unexpected output from rig/);
+  });
+});
+
+describe("runRig single-event helper", () => {
+  test("returns parsed whoami-authed payload", async () => {
+    const result = await runRig(
+      [
+        "whoami",
+      ],
+      WhoamiSchema,
+      {
+        rigPath: fakeRig,
+        env: {
+          FAKE_RIG_SCENARIO: "whoami-authed",
+        },
+      },
+    );
+    expect(result.authed).toBe(true);
+    if (result.authed) {
+      expect(result.user_email).toBe("j@example.com");
+    }
+  });
+
+  test("returns parsed whoami-unauthed payload", async () => {
+    const result = await runRig(
+      [
+        "whoami",
+      ],
+      WhoamiSchema,
+      {
+        rigPath: fakeRig,
+        env: {
+          FAKE_RIG_SCENARIO: "whoami-unauthed",
+        },
+      },
+    );
+    expect(result.authed).toBe(false);
+  });
+
+  test("throws RigError when rig exits non-zero", async () => {
+    await expect(
+      runRig(
+        [
+          "whoami",
+        ],
+        WhoamiSchema,
+        {
+          rigPath: fakeRig,
+          env: {
+            FAKE_RIG_SCENARIO: "auth-expired",
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "auth_expired",
+    });
   });
 });
 
