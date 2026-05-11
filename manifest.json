@@ -500,7 +500,7 @@
     "rigbox": {
       "name": "Rigbox",
       "price": "Free tier",
-      "description": "Managed Firecracker workspaces — one command to deploy AI agents with pre-baked recipes",
+      "description": "Managed workspaces — one command to deploy AI agents with pre-baked recipes",
       "url": "https://rigbox.dev",
       "type": "cli",
       "auth": "rig login (or browser-based device-code from spawn)",

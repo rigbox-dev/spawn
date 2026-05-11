@@ -1,6 +1,6 @@
 // rigbox/rigbox.ts — Rigbox cloud provider: rig CLI delegation + SSH runner.
 //
-// Rigbox is a managed Firecracker host (https://rigbox.dev). The cloud
+// Rigbox is a managed workspace host (https://rigbox.dev). The cloud
 // orchestrator side here only needs to:
 //
 //   1. Authenticate the spawn user via `rig login`. Checks `rig whoami`
@@ -9,7 +9,7 @@
 //      events into spawn's UI. rig persists the API key.
 //
 //   2. `rig spawn <name> --catalog <recipe> --output json` to provision
-//      a Firecracker VM. Reads SpawnEvents from the stream; the `ready`
+//      a workspace. Reads SpawnEvents from the stream; the `ready`
 //      event carries ssh_user and ssh_host.
 //
 //   3. Inject the user's OpenRouter API key via `rig env set` and flip

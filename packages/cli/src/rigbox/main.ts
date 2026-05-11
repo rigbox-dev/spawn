@@ -2,9 +2,9 @@
 
 // rigbox/main.ts — Orchestrator: deploys an agent on Rigbox.
 //
-// Rigbox is a managed Firecracker host. Every supported agent has a
+// Rigbox is a managed workspace host. Every supported agent has a
 // pre-baked catalog recipe (see SPAWN_TO_RIGBOX_RECIPE in ./agents.ts)
-// that install.sh inside the VM at first boot. The orchestrator's job
+// that install.sh inside the workspace at first boot. The orchestrator's job
 // here is auth → POST /workspaces with the recipe ID → forward the
 // user's OpenRouter key (or flip to managed proxy) → open the
 // interactive SSH session.
@@ -61,7 +61,7 @@ async function main() {
     // The catalog recipe installs the agent during first_boot — spawn
     // skips its own install path entirely.
     skipAgentInstall: true,
-    // Firecracker VMs do not run cloud-init the way Hetzner/DO do.
+    // Rigbox workspaces do not run cloud-init the way Hetzner/DO do.
     skipCloudInit: true,
     runner: {
       runServer,
