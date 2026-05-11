@@ -3,10 +3,10 @@
 // Rigbox is a managed Firecracker host (https://rigbox.dev). The cloud
 // orchestrator side here only needs to:
 //
-//   1. Authenticate the spawn user against the Rigbox API. Four-step
-//      resolution: RIG_API_KEY env → existing rig CLI login →
-//      ~/.config/spawn/rigbox.json → browser-based device-code flow
-//      against `POST /auth/cli-session`.
+//   1. Authenticate the spawn user via `rig login`. Checks `rig whoami`
+//      first; if already authed, returns immediately. Otherwise drives
+//      the NDJSON browser login event stream from `rig login` and renders
+//      events into spawn's UI. rig persists the API key.
 //
 //   2. `POST /v1/workspaces { catalog_ids: ["<recipe>"] }` to provision
 //      a Firecracker VM with the agent's install baked in, then poll
@@ -22,12 +22,12 @@
 
 import type { VMConnection } from "../history.js";
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseJsonWith } from "@openrouter/spawn-shared";
 import * as v from "valibot";
 import { getUserHome } from "../shared/paths.js";
-import { asyncTryCatch, tryCatch } from "../shared/result.js";
+import { asyncTryCatch } from "../shared/result.js";
 import { SSH_BASE_OPTS, SSH_INTERACTIVE_OPTS, spawnInteractive, validateRemotePath } from "../shared/ssh.js";
 import { ensureSshKeys, getSshKeyOpts } from "../shared/ssh-keys.js";
 import {
@@ -36,18 +36,15 @@ import {
   logStep,
   logStepDone,
   logWarn,
-  openBrowser,
   promptSpawnNameShared,
   sanitizeTermValue,
   shellQuote,
 } from "../shared/ui.js";
+import { checkRigVersion, runRig, streamRig, WhoamiSchema } from "./rig-runner.js";
 
 // ── Configurable knobs ──────────────────────────────────────────────
 
 const RIGBOX_API_URL = process.env.RIGBOX_API_URL || "https://api.rigbox.dev/v1";
-const RIGBOX_CONFIG_DIR = join(getUserHome(), ".config", "spawn");
-const RIGBOX_CONFIG_PATH = join(RIGBOX_CONFIG_DIR, "rigbox.json");
-const RIG_CONFIG_PATH = join(getUserHome(), ".config", "rigbox", "config.toml");
 
 // Region-direct SSH host. Override with RIGBOX_SSH_HOST when running
 // against a different region.
@@ -55,29 +52,22 @@ const RIGBOX_SSH_HOST = process.env.RIGBOX_SSH_HOST || "eu-west-1.rigbox.dev";
 
 const CREATE_POLL_INTERVAL_MS = 2000;
 const CREATE_POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
-const LOGIN_POLL_INTERVAL_MS = 2000;
-const LOGIN_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ── Module state ────────────────────────────────────────────────────
 
 interface RigboxState {
-  apiKey: string;
   workspaceId: string;
   workspaceName: string;
   /** Region-direct SSH host (e.g. `eu-west-1.rigbox.dev`). */
   sshHost: string;
-  /** Dashboard host used for the login URL — derived from API host. */
-  dashboardHost: string;
   /** True when the user passed --managed (vs the default forwarded-key flow). */
   managedMode: boolean;
 }
 
 const _state: RigboxState = {
-  apiKey: "",
   workspaceId: "",
   workspaceName: "",
   sshHost: RIGBOX_SSH_HOST,
-  dashboardHost: "rigbox.dev",
   managedMode: false,
 };
 
@@ -129,29 +119,18 @@ const CatalogResponseSchema = v.object({
  * image's own services without bumping into the limit. */
 const SIZE_HEADROOM_MB = 256;
 
-const CliSessionPollSchema = v.object({
-  status: v.string(),
-  api_key: v.optional(v.string()),
-});
-
-const SpawnRigboxConfigSchema = v.object({
-  api_key: v.optional(v.string()),
-});
-
 type WorkspaceResponse = v.InferOutput<typeof WorkspaceResponseSchema>;
 type WorkspaceList = v.InferOutput<typeof WorkspaceListSchema>;
-type CliSessionPoll = v.InferOutput<typeof CliSessionPollSchema>;
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function authHeaders(): Record<string, string> {
-  if (!_state.apiKey) {
-    throw new Error("Rigbox API key not set — authenticate() must run before any API call.");
-  }
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${_state.apiKey}`,
-  };
+  // TODO(Task 8+9): apiCall/apiCallVoid are replaced by runRig/streamRig;
+  // delete authHeaders once createWorkspace, env, and AI-mode are migrated.
+  throw new Error(
+    "authHeaders() is no longer valid — direct API calls are being replaced by `rig` CLI delegation. " +
+      "This is a Task 8/9 migration marker.",
+  );
 }
 
 async function apiCall<S extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
@@ -200,25 +179,6 @@ async function apiCallVoid(method: string, path: string, body?: unknown): Promis
 }
 
 /**
- * Strip the `api.` prefix from the API host to get the dashboard host.
- * Used to construct the login URL (`https://<dashboard>/login?cli_session=…`).
- * Distinct from the SSH host which is region-prefixed (e.g.
- * `eu-west-1.rigbox.dev`) and configured via RIGBOX_SSH_HOST.
- */
-function deriveDashboardHost(apiUrl: string): string {
-  const host =
-    apiUrl
-      .replace(/^https?:\/\//, "")
-      .split("/")[0]
-      ?.trim() ?? "";
-  if (host.startsWith("api.")) {
-    const stripped = host.slice(4);
-    return stripped.length > 0 ? stripped : "rigbox.dev";
-  }
-  return host || "rigbox.dev";
-}
-
-/**
  * Build the canonical SSH username for a Rigbox workspace. Format:
  * `<normalized-name>-<id-suffix>` where `<id-suffix>` is the workspace
  * ID with the `ws-` prefix stripped.
@@ -235,73 +195,12 @@ function buildSshUser(workspaceName: string, workspaceId: string): string {
   return suffix ? `${normalized}-${suffix}` : normalized;
 }
 
-// ── Auth: 4-step key resolution ─────────────────────────────────────
-
-function readEnvKey(): string | null {
-  const fromEnv = (process.env.RIG_API_KEY || process.env.RIGBOX_API_KEY || "").trim();
-  return fromEnv || null;
-}
-
-function readRigCliKey(): string | null {
-  // rigbox-cli persists at ~/.config/rigbox/config.toml — minimal TOML
-  // parser: we only need `api_key = "..."`. Avoid a TOML dep for one field.
-  if (!existsSync(RIG_CONFIG_PATH)) {
-    return null;
-  }
-  const text = readFileSync(RIG_CONFIG_PATH, "utf8");
-  const match = text.match(/^\s*api_key\s*=\s*"([^"]+)"\s*$/m);
-  return match?.[1]?.trim() || null;
-}
-
-function readSpawnRigboxKey(): string | null {
-  if (!existsSync(RIGBOX_CONFIG_PATH)) {
-    return null;
-  }
-  const raw = readFileSync(RIGBOX_CONFIG_PATH, "utf8");
-  const parsed = parseJsonWith(raw, SpawnRigboxConfigSchema);
-  if (parsed === null) {
-    return null;
-  }
-  const key = parsed.api_key?.trim();
-  return key && key.length > 0 ? key : null;
-}
-
-function persistSpawnRigboxKey(apiKey: string): void {
-  mkdirSync(RIGBOX_CONFIG_DIR, {
-    recursive: true,
-  });
-  writeFileSync(
-    RIGBOX_CONFIG_PATH,
-    JSON.stringify(
-      {
-        api_key: apiKey,
-      },
-      null,
-      2,
-    ),
-    {
-      mode: 0o600,
-    },
-  );
-}
-
-function generateSessionCode(): string {
-  // 32-char base36 — matches the format the dashboard expects.
-  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
-  let out = "";
-  for (let i = 0; i < 32; i++) {
-    out += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return out;
-}
-
 // ── Rig CLI auto-install ────────────────────────────────────────────
 
 const RIG_INSTALL_URL = "https://rigbox.dev/install.sh";
 
 /** Resolve the path to a usable `rig` binary, or null if unavailable. */
 function getRigCmd(): string | null {
-  // Prefer PATH lookup (covers user-managed installs anywhere).
   const which = Bun.spawnSync(
     [
       "sh",
@@ -322,63 +221,29 @@ function getRigCmd(): string | null {
       return out;
     }
   }
-  // Common install locations the install.sh defaults to.
   const candidates = [
     join(getUserHome(), ".local", "bin", "rig"),
     "/usr/local/bin/rig",
     "/opt/homebrew/bin/rig",
   ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate;
+  for (const c of candidates) {
+    if (existsSync(c)) {
+      return c;
     }
   }
   return null;
 }
 
-/**
- * Install the rig CLI if it isn't already on the user's machine.
- *
- * Best-effort: failures are logged but don't abort the spawn flow,
- * since the rigbox cloud module talks to the Rigbox API directly and
- * doesn't strictly require rig. The install gives users an entry point
- * to manage workspaces beyond the single spawn invocation
- * (`rig logs`, `rig stop`, `rig ssh-info`, etc.).
- */
 export async function ensureRigCli(): Promise<void> {
-  const existing = getRigCmd();
-  if (existing) {
-    const versionResult = Bun.spawnSync(
-      [
-        existing,
-        "--version",
-      ],
-      {
-        stdio: [
-          "ignore",
-          "pipe",
-          "ignore",
-        ],
-      },
-    );
-    const version = new TextDecoder().decode(versionResult.stdout).trim().split("\n")[0];
-    if (version) {
-      logInfo(`rig CLI already installed: ${version}`);
-    } else {
-      logInfo("rig CLI already installed");
-    }
+  if (getRigCmd()) {
     return;
   }
-
   if (process.env.SPAWN_NON_INTERACTIVE === "1") {
-    logInfo(
-      "Skipping rig CLI install (non-interactive mode). " +
-        "Install later: curl -fsSL https://rigbox.dev/install.sh | sh",
+    throw new Error(
+      "rig CLI not found. spawn-rigbox requires `rig`. " + "Install: curl -fsSL https://rigbox.dev/install.sh | sh",
     );
-    return;
   }
-
-  logStep("Installing rig CLI for richer workspace management...");
+  logStep("Installing rig CLI...");
   const proc = Bun.spawn(
     [
       "sh",
@@ -393,128 +258,62 @@ export async function ensureRigCli(): Promise<void> {
       ],
     },
   );
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    logWarn(
-      "rig CLI install did not complete cleanly. " +
-        "spawn-rigbox will keep working — rig is optional. " +
-        "Try manually: curl -fsSL https://rigbox.dev/install.sh | sh",
-    );
-    return;
+  if ((await proc.exited) !== 0) {
+    throw new Error("rig CLI install failed");
   }
-
-  // Add ~/.local/bin to PATH for the rest of this spawn invocation so
-  // `rig --version` lookups + downstream subprocess execs find it.
   const localBin = join(getUserHome(), ".local", "bin");
   if (!process.env.PATH?.split(":").includes(localBin)) {
     process.env.PATH = `${localBin}:${process.env.PATH ?? ""}`;
   }
-
-  if (getRigCmd()) {
-    logInfo("rig CLI installed");
-  } else {
-    logWarn(`rig CLI installed but not yet on PATH. Add it manually: export PATH="${localBin}:$PATH"`);
+  if (!getRigCmd()) {
+    throw new Error(`rig CLI installed but not on PATH. Add: export PATH="${localBin}:$PATH"`);
   }
-}
-
-async function deviceCodeFlow(): Promise<string> {
-  const code = generateSessionCode();
-  // POST /auth/cli-session is unauthenticated.
-  const createResp = await fetch(`${RIGBOX_API_URL}/auth/cli-session`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      code,
-    }),
-  });
-  if (!createResp.ok) {
-    throw new Error(`Rigbox cli-session create failed: ${createResp.status}`);
-  }
-
-  const loginUrl = `https://${_state.dashboardHost}/login?cli_session=${code}`;
-
-  logStep("Open this URL in your browser to log in to Rigbox:");
-  logInfo(`  ${loginUrl}`);
-  if (process.env.SPAWN_NON_INTERACTIVE !== "1") {
-    // best-effort; if the browser handler fails we still print the URL.
-    const _ignored = tryCatch(() => {
-      openBrowser(loginUrl);
-    });
-    void _ignored;
-  }
-  logStep("Waiting for browser approval...");
-
-  const deadline = Date.now() + LOGIN_POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await sleep(LOGIN_POLL_INTERVAL_MS);
-    const poll = await fetch(`${RIGBOX_API_URL}/auth/cli-session/${code}`);
-    if (poll.status === 404) {
-      throw new Error("Rigbox login session expired. Run again.");
-    }
-    if (!poll.ok) {
-      continue; // transient — keep polling
-    }
-    const textResult = await asyncTryCatch(() => poll.text());
-    if (!textResult.ok) {
-      continue;
-    }
-    const body: CliSessionPoll | null = parseJsonWith(textResult.data, CliSessionPollSchema);
-    if (body === null) {
-      continue;
-    }
-    if (body.status === "approved" && body.api_key) {
-      logStepDone();
-      logInfo("Rigbox login approved");
-      return body.api_key;
-    }
-  }
-  throw new Error("Rigbox login timed out after 5 minutes");
 }
 
 export async function authenticate(): Promise<void> {
-  _state.dashboardHost = deriveDashboardHost(RIGBOX_API_URL);
-
-  // Prompt for / derive the workspace name first — spawn's
-  // runOrchestration reads SPAWN_NAME_KEBAB when calling createServer,
-  // so the name must be populated before the orchestrator advances.
-  // Non-interactive runs auto-generate via defaultSpawnName().
+  // Name first — same UX as today, so the orchestrator advances.
   await promptSpawnNameShared("Rigbox workspace");
 
-  // 1. Env override (headless / CI).
-  const envKey = readEnvKey();
-  if (envKey) {
-    _state.apiKey = envKey;
-    logInfo("Using Rigbox API key from RIG_API_KEY env var");
-    return;
-  }
-
-  // 2. Reuse an existing `rig login` (~/.config/rigbox/config.toml).
-  const rigKey = readRigCliKey();
-  if (rigKey) {
-    _state.apiKey = rigKey;
-    logInfo("Reusing Rigbox login from rig CLI config");
-    return;
-  }
-
-  // 3. Reuse a prior spawn-rigbox device-code login.
-  const spawnKey = readSpawnRigboxKey();
-  if (spawnKey) {
-    _state.apiKey = spawnKey;
-    logInfo("Reusing prior Rigbox login from ~/.config/spawn/rigbox.json");
-    return;
-  }
-
-  // 4. Device-code flow.
-  const apiKey = await deviceCodeFlow();
-  _state.apiKey = apiKey;
-  persistSpawnRigboxKey(apiKey);
-
-  // Once the user has authed against Rigbox, get rig CLI installed so
-  // they can manage the workspace beyond this single spawn invocation.
-  // Best-effort — failures here don't abort the flow.
   await ensureRigCli();
+  await checkRigVersion();
+
+  // Detect current auth state.
+  const whoami = await runRig(
+    [
+      "whoami",
+    ],
+    WhoamiSchema,
+  ).catch(() => null);
+  if (whoami?.authed) {
+    logInfo(`Logged in as ${whoami.user_email}`);
+    return;
+  }
+
+  // Drive interactive browser login. Spawn renders each event in its
+  // own UI; rig persists the key.
+  for await (const ev of streamRig([
+    "login",
+  ])) {
+    if (ev.kind === "login") {
+      switch (ev.data.event) {
+        case "browser_url":
+          logStep("Open this URL in your browser to log in to Rigbox:");
+          logInfo(`  ${ev.data.url}`);
+          logStep("Waiting for browser approval...");
+          break;
+        case "approved":
+          logStepDone();
+          logInfo(`Logged in as ${ev.data.user_email}`);
+          break;
+        case "saved":
+        case "session_created":
+        case "polling":
+          // Silent in human mode; the spinner state is implicit.
+          break;
+      }
+    }
+    // error events propagate through streamRig's exit handling.
+  }
 }
 
 // ── Workspace lifecycle ─────────────────────────────────────────────
