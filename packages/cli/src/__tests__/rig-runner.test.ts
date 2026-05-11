@@ -1,6 +1,7 @@
 import type { ParsedEvent } from "../rigbox/rig-runner";
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import {
@@ -358,6 +359,49 @@ describe("runRig single-event helper", () => {
     ).rejects.toMatchObject({
       code: "auth_expired",
     });
+  });
+});
+
+describe("rig 0.4.0 fixture parsing", () => {
+  const fixturesDir = join(import.meta.dir, "../../../..", "fixtures/rig");
+
+  test("login-success.ndjson parses cleanly through parseEvent", () => {
+    const text = readFileSync(join(fixturesDir, "login-success.ndjson"), "utf8");
+    const events = text
+      .trim()
+      .split("\n")
+      .map((l) => parseEvent(l));
+    expect(events.every((e) => e.kind === "login")).toBe(true);
+  });
+
+  test("spawn-with-catalog.ndjson parses cleanly through parseEvent", () => {
+    const text = readFileSync(join(fixturesDir, "spawn-with-catalog.ndjson"), "utf8");
+    const events = text
+      .trim()
+      .split("\n")
+      .map((l) => parseEvent(l));
+    expect(events.every((e) => e.kind === "spawn")).toBe(true);
+  });
+
+  test("error-vm-failed.ndjson final event is an error", () => {
+    const text = readFileSync(join(fixturesDir, "error-vm-failed.ndjson"), "utf8");
+    const events = text
+      .trim()
+      .split("\n")
+      .map((l) => parseEvent(l));
+    expect(events[events.length - 1]?.kind).toBe("error");
+  });
+
+  test("whoami-authed.json validates", () => {
+    const raw = readFileSync(join(fixturesDir, "whoami-authed.json"), "utf8");
+    const parsed = v.parse(WhoamiSchema, JSON.parse(raw));
+    expect(parsed.authed).toBe(true);
+  });
+
+  test("whoami-unauthed.json validates", () => {
+    const raw = readFileSync(join(fixturesDir, "whoami-unauthed.json"), "utf8");
+    const parsed = v.parse(WhoamiSchema, JSON.parse(raw));
+    expect(parsed.authed).toBe(false);
   });
 });
 

@@ -1,0 +1,9 @@
+{"event":"creating","name":"my-ws"}
+{"event":"created","id":"ws-abc","status":"provisioned"}
+{"event":"starting"}
+{"event":"vm_status","status":"booting"}
+{"event":"vm_status","status":"running"}
+{"event":"apps_installing","expected":1}
+{"event":"app_status","app":"claude","status":"installing"}
+{"event":"app_status","app":"claude","status":"active"}
+{"event":"ready","id":"ws-abc","name":"my-ws","ssh_user":"my-ws-abc","ssh_host":"eu-west-1.rigbox.dev"}

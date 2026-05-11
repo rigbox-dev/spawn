@@ -1,0 +1,6 @@
+{"event":"session_created","code":"abc123"}
+{"event":"browser_url","url":"https://rigbox.dev/login?cli_session=abc123"}
+{"event":"polling","elapsed_ms":2000}
+{"event":"polling","elapsed_ms":4000}
+{"event":"approved","user_email":"j@example.com"}
+{"event":"saved","path":"/home/user/.config/rigbox/config.json"}

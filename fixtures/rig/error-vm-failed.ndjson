@@ -1,0 +1,3 @@
+{"event":"creating","name":"my-ws"}
+{"event":"vm_status","status":"failed"}
+{"event":"error","code":"vm_failed","message":"Workspace failed to boot (status: failed)"}
