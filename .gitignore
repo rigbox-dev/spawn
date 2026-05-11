@@ -19,3 +19,4 @@ service-account.json
 # Local DigitalOcean dev tooling (not versioned)
 sh/digitalocean/reset-local-state.sh
 sh/digitalocean/reset-local-state.md
+.todos/

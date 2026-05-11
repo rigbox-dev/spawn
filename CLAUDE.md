@@ -59,6 +59,10 @@ All cloud provisioning and agent setup logic lives in TypeScript under `packages
 
 **`sh/shared/key-request.sh`** — API key provisioning helpers sourced by the QA harness (`qa.sh`) for loading cloud credentials from `~/.config/spawn/{cloud}.json`.
 
+## Rigbox Cloud Module
+
+The rigbox cloud module delegates all API interaction to the `rig` CLI (>= 0.4.0), which reads/writes credentials from `~/.config/rigbox/config.json` (XDG_CONFIG_HOME). See `sh/sprite/` for cloud-specific setup and `packages/cli/src/rigbox/` for the rig runner implementation.
+
 ## After Each Change
 
 1. `bash -n {file}` syntax check on all modified scripts

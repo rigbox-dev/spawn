@@ -1,6 +1,6 @@
 # Rigbox cloud — one-liners
 
-[Rigbox](https://rigbox.dev) is a managed Firecracker host. Every shim
+[Rigbox](https://rigbox.dev) is a managed workspace host. Every shim
 in this directory provisions a Rigbox workspace pre-baked with the
 named agent's catalog recipe.
 
@@ -23,7 +23,7 @@ bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/kilocode.sh)
    (device-code flow against `POST /auth/cli-session`). `rig` CLI
    users have their existing login reused automatically.
 2. `POST /v1/workspaces { catalog_ids: ["<recipe>"] }` provisions a
-   Firecracker VM with the agent install script baked in.
+   workspace with the agent install script baked in.
 3. The user's spawn-OAuth'd OpenRouter key is forwarded into the
    workspace env via `POST /v1/workspaces/{id}/env`. The recipe's
    `/etc/profile.d/<agent>-routing.sh` translates `OPENROUTER_*` into

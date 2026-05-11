@@ -4,6 +4,13 @@ Launch any AI agent on any cloud with a single command. Coding agents, research 
 
 **9 agents. 7 clouds. 63 working combinations. Zero config.**
 
+## Requirements
+
+- **bun >= 1.2.0** (auto-installed by the spawn installer)
+- **rig >= 0.4.0** (required only if using Sprite cloud; auto-installed on first use, or manually: `curl -fsSL https://rigbox.dev/install.sh | sh`)
+
+Set `SPAWN_NON_INTERACTIVE=1` to require a pre-installed `rig` (disable auto-install).
+
 ## Install
 
 **macOS / Linux — and Windows users inside a WSL2 terminal (Ubuntu, Debian, etc.):**
@@ -243,6 +250,10 @@ OPENROUTER_API_KEY=sk-or-v1-xxxxx spawn claude sprite
 Get your OpenRouter API key at: https://openrouter.ai/settings/keys
 
 For cloud-specific auth, see each cloud's README in this repository.
+
+### Auth Reuse
+
+If you've run `rig login` previously (e.g., on Sprite cloud), spawn picks up your rigbox session automatically from `~/.config/rigbox/config.json` (XDG config directory). Spawn calls `rig whoami` to detect login state and only triggers `rig login` when needed. No second login required.
 
 ## Troubleshooting
 

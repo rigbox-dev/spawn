@@ -6,9 +6,9 @@
 // during VM boot (Mode A). The orchestrator then sets
 // `skipAgentInstall: true` so spawn does not also try to install.
 //
-// Agents without a recipe (currently cursor, junie, pi, t3code) error
-// out — spawn-on-rigbox is opt-in by recipe and we'd rather fail fast
-// than silently provision a bare workspace and confuse the user.
+// Agents without a recipe (currently cursor) error out — spawn-on-rigbox
+// is opt-in by recipe and we'd rather fail fast than silently provision
+// a bare workspace and confuse the user.
 
 import { createCloudAgents } from "../shared/agent-setup.js";
 import { downloadFile, runServer, uploadFile } from "./rigbox.js";
@@ -31,9 +31,12 @@ export const SPAWN_TO_RIGBOX_RECIPE: Record<string, string> = {
   claude: "claude",
   codex: "codex",
   hermes: "hermes-agent",
+  junie: "junie",
   kilocode: "kilocode",
   opencode: "opencode",
   openclaw: "openclaw-gateway",
+  pi: "pi",
+  t3code: "t3code",
 };
 
 export function rigboxRecipeFor(agentName: string): string | undefined {
