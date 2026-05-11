@@ -1,6 +1,7 @@
 import type { ParsedEvent } from "../rigbox/rig-runner";
 
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import * as v from "valibot";
 import {
   _resetVersionCheckCache,
@@ -14,6 +15,7 @@ import {
   RIG_MIN_VERSION,
   RigVersionError,
   SpawnEventSchema,
+  streamRig,
   WhoamiSchema,
 } from "../rigbox/rig-runner";
 import { asyncTryCatch } from "../shared/result.js";
@@ -204,6 +206,101 @@ describe("parseLines", () => {
       events.push(ev);
     }
     expect(events.length).toBe(2);
+  });
+});
+
+const fakeRig = join(import.meta.dir, "../../../..", "fixtures/rig/fake-rig.sh");
+
+describe("streamRig with fake-rig", () => {
+  test("yields events from login-success scenario", async () => {
+    const events: ParsedEvent[] = [];
+    for await (const ev of streamRig(
+      [
+        "login",
+      ],
+      {
+        rigPath: fakeRig,
+        env: {
+          FAKE_RIG_SCENARIO: "login-success",
+        },
+      },
+    )) {
+      events.push(ev);
+    }
+    expect(events.length).toBe(5);
+    expect(events[0]?.kind).toBe("login");
+    expect(events[3]?.kind).toBe("login");
+    if (events[3]?.kind === "login" && events[3].data.event === "approved") {
+      expect(events[3].data.user_email).toBe("j@example.com");
+    }
+  });
+
+  test("throws on auth_expired exit code 2", async () => {
+    const run = async () => {
+      const events: ParsedEvent[] = [];
+      for await (const ev of streamRig(
+        [
+          "whoami",
+        ],
+        {
+          rigPath: fakeRig,
+          env: {
+            FAKE_RIG_SCENARIO: "auth-expired",
+          },
+        },
+      )) {
+        events.push(ev);
+      }
+    };
+    await expect(run()).rejects.toMatchObject({
+      code: "auth_expired",
+    });
+  });
+
+  test("throws on vm_failed error event with exit 1", async () => {
+    const run = async () => {
+      const events: ParsedEvent[] = [];
+      for await (const ev of streamRig(
+        [
+          "spawn",
+          "my-ws",
+        ],
+        {
+          rigPath: fakeRig,
+          env: {
+            FAKE_RIG_SCENARIO: "spawn-vm-failed",
+          },
+        },
+      )) {
+        events.push(ev);
+      }
+    };
+    await expect(run()).rejects.toMatchObject({
+      code: "vm_failed",
+    });
+  });
+
+  test("rejects unparseable lines as contract violations", async () => {
+    const tmpScript = "/tmp/fake-rig-garbage.sh";
+    await Bun.write(tmpScript, "#!/usr/bin/env bash\necho 'not json'\nexit 0\n");
+    await Bun.spawn([
+      "chmod",
+      "+x",
+      tmpScript,
+    ]).exited;
+    const run = async () => {
+      for await (const _ of streamRig(
+        [
+          "whoami",
+        ],
+        {
+          rigPath: tmpScript,
+        },
+      )) {
+        /* nothing */
+      }
+    };
+    await expect(run()).rejects.toThrow(/Unexpected output from rig/);
   });
 });
 

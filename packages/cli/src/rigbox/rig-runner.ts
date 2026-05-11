@@ -315,6 +315,95 @@ export function _resetVersionCheckCache(): void {
   _versionChecked = false;
 }
 
+// ── Subprocess wrapper ────────────────────────────────────────
+
+export interface StreamRigOptions {
+  /** Override the rig binary path. Default: "rig" (PATH lookup). */
+  rigPath?: string;
+  /** Extra env vars merged with process.env. */
+  env?: Record<string, string>;
+}
+
+export class RigError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly exitCode: number,
+  ) {
+    super(message);
+    this.name = "RigError";
+  }
+}
+
+function makeRigError(code: string, message: string, exitCode: number): RigError {
+  return new RigError(code, message, exitCode);
+}
+
+/** Spawn `rig <args> --output json` and yield parsed events. Throws a
+ * `RigError` with a `code` field on non-zero exit. Exit code 2 always
+ * maps to `auth_expired`. */
+export async function* streamRig(args: string[], options: StreamRigOptions = {}): AsyncIterable<ParsedEvent> {
+  const rigPath = options.rigPath ?? "rig";
+  const fullArgs = [
+    ...args,
+    "--output",
+    "json",
+  ];
+  const proc: Bun.Subprocess<"inherit", "pipe", "inherit"> = Bun.spawn(
+    [
+      rigPath,
+      ...fullArgs,
+    ],
+    {
+      stdio: [
+        "inherit",
+        "pipe",
+        "inherit",
+      ],
+      env: {
+        ...process.env,
+        ...options.env,
+      },
+    },
+  );
+
+  let lastError: ErrorEvent | null = null;
+  let unparseable: unknown = null;
+  for await (const ev of parseLines(proc.stdout)) {
+    if (ev.kind === "error") {
+      lastError = ev.data;
+    } else if (ev.kind === "unknown") {
+      unparseable = ev.raw;
+    }
+    yield ev;
+  }
+
+  const exitCode = await proc.exited;
+
+  if (unparseable !== null) {
+    throw makeRigError(
+      "internal",
+      `Unexpected output from rig: ${JSON.stringify(unparseable).slice(0, 256)}`,
+      exitCode,
+    );
+  }
+
+  if (exitCode === 2) {
+    throw makeRigError(
+      lastError?.code ?? "auth_expired",
+      lastError?.message ?? "Your rigbox login expired. Run `rig login` and try again.",
+      2,
+    );
+  }
+
+  if (exitCode !== 0) {
+    if (lastError) {
+      throw makeRigError(lastError.code, lastError.message, exitCode);
+    }
+    throw makeRigError("internal", `rig exited with code ${exitCode}`, exitCode);
+  }
+}
+
 // ── Line reader ───────────────────────────────────────────────
 
 /** Read a `ReadableStream<Uint8Array>` line-by-line, yielding each line
