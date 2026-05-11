@@ -1,4 +1,4 @@
-// rigbox/rigbox.ts — Rigbox cloud provider: API client + workspace lifecycle + SSH runner.
+// rigbox/rigbox.ts — Rigbox cloud provider: rig CLI delegation + SSH runner.
 //
 // Rigbox is a managed Firecracker host (https://rigbox.dev). The cloud
 // orchestrator side here only needs to:
@@ -8,26 +8,21 @@
 //      the NDJSON browser login event stream from `rig login` and renders
 //      events into spawn's UI. rig persists the API key.
 //
-//   2. `POST /v1/workspaces { catalog_ids: ["<recipe>"] }` to provision
-//      a Firecracker VM with the agent's install baked in, then poll
-//      `GET /v1/workspaces/{id}` until status=running.
+//   2. `rig spawn <name> --catalog <recipe> --output json` to provision
+//      a Firecracker VM. Reads SpawnEvents from the stream; the `ready`
+//      event carries ssh_user and ssh_host.
 //
-//   3. Inject the user's OpenRouter API key into the workspace env via
-//      `POST /v1/workspaces/{id}/env` so the agent's profile.d shim
-//      picks it up. `--managed` swaps this for
-//      `PUT /v1/workspaces/{id}/ai-config { mode: "managed" }`.
+//   3. Inject the user's OpenRouter API key via `rig env set` and flip
+//      the workspace AI mode via `rig ai mode byok`. `--managed` swaps
+//      this for `rig ai mode managed`.
 //
-//   4. Drive SSH region-direct: `<workspace>-<id-suffix>@<region>.rigbox.dev`
-//      (override via RIGBOX_SSH_HOST).
+//   4. Drive SSH using ssh_user and ssh_host from the ready event.
 
 import type { VMConnection } from "../history.js";
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { parseJsonWith } from "@openrouter/spawn-shared";
-import * as v from "valibot";
 import { getUserHome } from "../shared/paths.js";
-import { asyncTryCatch } from "../shared/result.js";
 import { SSH_BASE_OPTS, SSH_INTERACTIVE_OPTS, spawnInteractive, validateRemotePath } from "../shared/ssh.js";
 import { ensureSshKeys, getSshKeyOpts } from "../shared/ssh-keys.js";
 import {
@@ -42,23 +37,12 @@ import {
 } from "../shared/ui.js";
 import { checkRigVersion, runRig, streamRig, WhoamiSchema } from "./rig-runner.js";
 
-// ── Configurable knobs ──────────────────────────────────────────────
-
-const RIGBOX_API_URL = process.env.RIGBOX_API_URL || "https://api.rigbox.dev/v1";
-
-// Region-direct SSH host. Override with RIGBOX_SSH_HOST when running
-// against a different region.
-const RIGBOX_SSH_HOST = process.env.RIGBOX_SSH_HOST || "eu-west-1.rigbox.dev";
-
-const CREATE_POLL_INTERVAL_MS = 2000;
-const CREATE_POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
-
 // ── Module state ────────────────────────────────────────────────────
 
 interface RigboxState {
   workspaceId: string;
   workspaceName: string;
-  /** Region-direct SSH host (e.g. `eu-west-1.rigbox.dev`). */
+  sshUser: string;
   sshHost: string;
   /** True when the user passed --managed (vs the default forwarded-key flow). */
   managedMode: boolean;
@@ -67,133 +51,10 @@ interface RigboxState {
 const _state: RigboxState = {
   workspaceId: "",
   workspaceName: "",
-  sshHost: RIGBOX_SSH_HOST,
+  sshUser: "",
+  sshHost: "",
   managedMode: false,
 };
-
-// ── Response schemas ─────────────────────────────────────────────────
-
-const WorkspaceSchema = v.object({
-  id: v.string(),
-  name: v.string(),
-  status: v.string(),
-  ip_address: v.optional(v.nullable(v.string())),
-});
-
-const WorkspaceResponseSchema = v.object({
-  vm: WorkspaceSchema,
-});
-
-const WorkspaceListSchema = v.object({
-  vms: v.array(WorkspaceSchema),
-});
-
-/** Subset of /v1/apps fields spawn uses for install-readiness polling.
- * `status` transitions installing → active when the catalog install
- * script exits 0, or → error if it fails. */
-const AppRowSchema = v.looseObject({
-  id: v.string(),
-  name: v.string(),
-  status: v.string(),
-});
-
-const AppListSchema = v.object({
-  apps: v.array(AppRowSchema),
-});
-
-/** Subset of /v1/app-catalog item fields spawn cares about — `looseObject`
- * keeps every other field the API returns from being a validation error
- * as the schema evolves. */
-const CatalogItemSchema = v.looseObject({
-  id: v.string(),
-  min_ram_mb: v.number(),
-  min_disk_mb: v.number(),
-});
-
-const CatalogResponseSchema = v.object({
-  items: v.array(CatalogItemSchema),
-});
-
-/** Headroom added on top of each recipe's declared minima — matches the
- * server's validate_catalog_ids reserve so the workspace boots the base
- * image's own services without bumping into the limit. */
-const SIZE_HEADROOM_MB = 256;
-
-type WorkspaceResponse = v.InferOutput<typeof WorkspaceResponseSchema>;
-type WorkspaceList = v.InferOutput<typeof WorkspaceListSchema>;
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-function authHeaders(): Record<string, string> {
-  // TODO(Task 8+9): apiCall/apiCallVoid are replaced by runRig/streamRig;
-  // delete authHeaders once createWorkspace, env, and AI-mode are migrated.
-  throw new Error(
-    "authHeaders() is no longer valid — direct API calls are being replaced by `rig` CLI delegation. " +
-      "This is a Task 8/9 migration marker.",
-  );
-}
-
-async function apiCall<S extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
-  method: string,
-  path: string,
-  schema: S,
-  body?: unknown,
-): Promise<v.InferOutput<S>> {
-  const url = `${RIGBOX_API_URL}${path}`;
-  const opts: RequestInit = {
-    method,
-    headers: authHeaders(),
-  };
-  if (body !== undefined) {
-    opts.body = JSON.stringify(body);
-  }
-  const resp = await fetch(url, opts);
-  const textResult = await asyncTryCatch(() => resp.text());
-  const text = textResult.ok ? textResult.data : "";
-  if (!resp.ok) {
-    throw new Error(`Rigbox API ${method} ${path} → ${resp.status}: ${text.slice(0, 256)}`);
-  }
-  const parsed = parseJsonWith(text, schema);
-  if (parsed === null) {
-    throw new Error(`Rigbox API ${method} ${path} returned an unexpected payload shape: ${text.slice(0, 256)}`);
-  }
-  return parsed;
-}
-
-/** apiCall variant for endpoints that don't return a body (e.g. POST /env, DELETE). */
-async function apiCallVoid(method: string, path: string, body?: unknown): Promise<void> {
-  const url = `${RIGBOX_API_URL}${path}`;
-  const opts: RequestInit = {
-    method,
-    headers: authHeaders(),
-  };
-  if (body !== undefined) {
-    opts.body = JSON.stringify(body);
-  }
-  const resp = await fetch(url, opts);
-  if (!resp.ok) {
-    const textResult = await asyncTryCatch(() => resp.text());
-    const text = textResult.ok ? textResult.data : "";
-    throw new Error(`Rigbox API ${method} ${path} → ${resp.status}: ${text.slice(0, 256)}`);
-  }
-}
-
-/**
- * Build the canonical SSH username for a Rigbox workspace. Format:
- * `<normalized-name>-<id-suffix>` where `<id-suffix>` is the workspace
- * ID with the `ws-` prefix stripped.
- */
-function buildSshUser(workspaceName: string, workspaceId: string): string {
-  const suffix = workspaceId.startsWith("ws-") ? workspaceId.slice(3) : workspaceId;
-  const normalized =
-    workspaceName
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-+|-+$/g, "") || "workspace";
-  return suffix ? `${normalized}-${suffix}` : normalized;
-}
 
 // ── Rig CLI auto-install ────────────────────────────────────────────
 
@@ -318,54 +179,6 @@ export async function authenticate(): Promise<void> {
 
 // ── Workspace lifecycle ─────────────────────────────────────────────
 
-interface CreateWorkspaceRequest {
-  name: string;
-  image?: string;
-  catalog_ids?: string[];
-  ram_mb?: number;
-  disk_size_mb?: number;
-}
-
-/**
- * Resolve the workspace RAM/disk needed for a catalog recipe.
- *
- * Rigbox catalog items declare `min_ram_mb` / `min_disk_mb` on the
- * `/v1/app-catalog` payload. We add a 256 MB / 256 MB headroom and pass
- * the result as `ram_mb` / `disk_size_mb` in the create request — the
- * server validates `ram_mb >= sum(min_ram_mb) + headroom` and 400s if
- * we undersize. Letting the server pick a default would land at
- * DEFAULT_RAM_MB (1 GB), which OOM-kills Node-based AI installers
- * inside the first_boot oneshot.
- */
-async function resolveCatalogResourceNeeds(recipeId: string): Promise<
-  | {
-      ramMb: number;
-      diskMb: number;
-    }
-  | undefined
-> {
-  const result = await asyncTryCatch(() => apiCall("GET", "/app-catalog", CatalogResponseSchema));
-  if (!result.ok) {
-    // Catalog lookup is best-effort: a stale spawn build talking to a
-    // newer server, or a transient 5xx, shouldn't block provisioning.
-    // The server's validate_catalog_ids will still 400 if we end up
-    // undersized, surfacing the failure with a clearer message.
-    // asyncTryCatch tags failures as `unknown`; coerce via a guard rather
-    // than an `as` cast so biome's no-explicit-cast rule passes.
-    const errMsg = result.error instanceof Error ? result.error.message : String(result.error);
-    logInfo(`Could not fetch /app-catalog to size workspace: ${errMsg}`);
-    return undefined;
-  }
-  const item = result.data.items.find((it) => it.id === recipeId);
-  if (!item) {
-    return undefined;
-  }
-  return {
-    ramMb: item.min_ram_mb + SIZE_HEADROOM_MB,
-    diskMb: item.min_disk_mb + SIZE_HEADROOM_MB,
-  };
-}
-
 /**
  * Create a Rigbox workspace pre-baked with the named catalog recipe.
  *
@@ -373,107 +186,75 @@ async function resolveCatalogResourceNeeds(recipeId: string): Promise<
  * (see `agents.ts` for the mapping). If the agent has no recipe, pass
  * undefined and the workspace boots as a bare base-coder VM — spawn's
  * normal install path then runs over SSH.
+ *
+ * Delegates to `rig spawn --output json` and reads SpawnEvents from the
+ * stream. The `ready` event carries ssh_user and ssh_host; those populate
+ * _state so makeConnection() can build the VMConnection without knowing
+ * the workspace ID format.
  */
 export async function createWorkspace(name: string, recipeId: string | undefined): Promise<VMConnection> {
-  const body: CreateWorkspaceRequest = {
+  const args = [
+    "spawn",
     name,
-    image: "base",
-  };
+  ];
   if (recipeId) {
-    body.catalog_ids = [
-      recipeId,
-    ];
-    const sizes = await resolveCatalogResourceNeeds(recipeId);
-    if (sizes) {
-      body.ram_mb = sizes.ramMb;
-      body.disk_size_mb = sizes.diskMb;
-    }
+    args.push("--catalog", recipeId);
+    // --auto-size and --wait-for-apps default-on when --catalog is set,
+    // so we don't need to pass them explicitly.
   }
 
   logStep(`Provisioning Rigbox workspace "${name}"...`);
-  const created: WorkspaceResponse = await apiCall("POST", "/workspaces", WorkspaceResponseSchema, body);
-  _state.workspaceId = created.vm.id;
-  _state.workspaceName = created.vm.name;
 
-  // POST /v1/workspaces creates the row in `provisioned` state but
-  // does not actually boot the Firecracker VM — that requires the
-  // explicit /start call. Without this the workspace sits idle and
-  // pollUntilRunning hits the timeout.
-  await apiCallVoid("POST", `/workspaces/${created.vm.id}/start`);
+  let readyId: string | null = null;
+  let readyName: string | null = null;
+  let sshUser: string | null = null;
+  let sshHost: string | null = null;
 
-  await pollUntilRunning(created.vm.id);
-
-  // VM `running` only means systemd reached multi-user.target; the
-  // catalog install (claude.ai/install.sh | bash, etc.) may still be
-  // running inside the first_boot oneshot. Block on Rigbox's
-  // authoritative per-app install signal before handing the
-  // connection to the orchestrator — otherwise the agent gets
-  // launched against a workspace where its binary isn't on disk yet.
-  const expectedApps = body.catalog_ids?.length ?? 0;
-  if (expectedApps > 0) {
-    logStep("Waiting for catalog app install to complete...");
-    await pollUntilAppsReady(created.vm.id, expectedApps);
+  for await (const ev of streamRig(args)) {
+    if (ev.kind !== "spawn") {
+      continue;
+    }
+    switch (ev.data.event) {
+      case "creating":
+        // Logged at the top — silent here.
+        break;
+      case "created":
+        logInfo(`Workspace created: ${ev.data.id}`);
+        break;
+      case "starting":
+        logStep("Starting VM...");
+        break;
+      case "vm_status":
+        logInfo(`VM: ${ev.data.status}`);
+        break;
+      case "apps_installing":
+        logStep(`Installing ${ev.data.expected} catalog app(s)...`);
+        break;
+      case "app_status":
+        logInfo(`  ${ev.data.app}: ${ev.data.status}`);
+        break;
+      case "ready":
+        readyId = ev.data.id;
+        readyName = ev.data.name;
+        sshUser = ev.data.ssh_user;
+        sshHost = ev.data.ssh_host;
+        break;
+    }
   }
+
+  if (!readyId || !readyName || !sshUser || !sshHost) {
+    throw new Error("rig spawn completed without a ready event");
+  }
+
+  _state.workspaceId = readyId;
+  _state.workspaceName = readyName;
+  _state.sshUser = sshUser;
+  _state.sshHost = sshHost;
 
   logStepDone();
-  logInfo(`Workspace ${name} is running`);
+  logInfo(`Workspace ${readyName} is running`);
 
   return makeConnection();
-}
-
-async function pollUntilRunning(workspaceId: string): Promise<void> {
-  const deadline = Date.now() + CREATE_POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const resp: WorkspaceResponse = await apiCall("GET", `/workspaces/${workspaceId}`, WorkspaceResponseSchema);
-    const status = resp.vm.status;
-    if (status === "running") {
-      return;
-    }
-    if (status === "failed" || status === "error") {
-      throw new Error(`Rigbox workspace failed to boot (status: ${status})`);
-    }
-    await sleep(CREATE_POLL_INTERVAL_MS);
-  }
-  throw new Error("Rigbox workspace did not reach 'running' within 5 minutes");
-}
-
-/**
- * Wait for every requested catalog app to finish installing.
- *
- * `vm.status === "running"` only means systemd is up — the catalog
- * install script may still be downloading and unpacking binaries in
- * the `rigbox-first-boot.service` oneshot. The authoritative ready
- * signal lives on each app row's `status`, set by Rigbox's install
- * pipeline:
- *
- *   installing → active   on successful catalog install
- *   installing → error    if the install script exits non-zero
- *
- * Polling this here means spawn never launches the agent before its
- * binary is actually on disk and configured.
- */
-async function pollUntilAppsReady(workspaceId: string, expectedCount: number): Promise<void> {
-  if (expectedCount === 0) {
-    return;
-  }
-
-  const deadline = Date.now() + CREATE_POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const resp = await apiCall("GET", `/apps?workspace_id=${workspaceId}`, AppListSchema);
-    const apps = resp.apps;
-
-    const errored = apps.find((a) => a.status === "error");
-    if (errored) {
-      throw new Error(`Rigbox catalog app "${errored.name}" failed to install (status: error)`);
-    }
-
-    if (apps.length >= expectedCount && apps.every((a) => a.status === "active")) {
-      return;
-    }
-
-    await sleep(CREATE_POLL_INTERVAL_MS);
-  }
-  throw new Error("Rigbox catalog apps did not all reach 'active' within 5 minutes");
 }
 
 /**
@@ -568,37 +349,26 @@ export function isManagedMode(): boolean {
   return _state.managedMode;
 }
 
-/** Delete the workspace (called by `spawn delete`). */
+/** Delete the workspace (called by `spawn delete`).
+ *
+ * TODO(Task 9): migrate to `rig rm --output json`. */
 export async function destroyWorkspace(name?: string): Promise<void> {
-  const targetName = name || _state.workspaceName;
-  if (!targetName) {
-    throw new Error("destroyWorkspace: no workspace name in state");
-  }
-
-  // Resolve name → id if we don't already have it cached.
-  let id = _state.workspaceId;
-  if (!id) {
-    const listed: WorkspaceList = await apiCall("GET", "/workspaces", WorkspaceListSchema);
-    const match = listed.vms.find((w) => w.name === targetName || w.id === targetName);
-    if (!match) {
-      throw new Error(`Workspace "${targetName}" not found`);
-    }
-    id = match.id;
-  }
-  await apiCallVoid("DELETE", `/workspaces/${id}`);
-  logStepDone();
-  logInfo(`Workspace ${targetName} deleted`);
+  throw new Error(
+    "destroyWorkspace() is not yet migrated — direct API calls removed. " +
+      "This is a Task 9 migration marker. name=" +
+      (name ?? _state.workspaceName),
+  );
 }
 
 // ── Connection + SSH ────────────────────────────────────────────────
 
 function makeConnection(): VMConnection {
-  // Username is `<normalized-name>-<id-suffix>`, host is the region
-  // hostname. VMConnection treats `ip` as a generic string field —
-  // using the hostname is fine; ssh resolves it.
+  // ssh_user and ssh_host come from the rig spawn ready event.
+  // VMConnection treats `ip` as a generic string field — using the
+  // hostname is fine; ssh resolves it.
   return {
     ip: _state.sshHost,
-    user: buildSshUser(_state.workspaceName, _state.workspaceId),
+    user: _state.sshUser,
     server_id: _state.workspaceId,
     server_name: _state.workspaceName,
     cloud: "rigbox",
@@ -626,12 +396,12 @@ export function getConnectionInfo(): {
 } {
   return {
     host: _state.sshHost,
-    user: buildSshUser(_state.workspaceName, _state.workspaceId),
+    user: _state.sshUser,
   };
 }
 
 function sshTarget(): string {
-  return `${buildSshUser(_state.workspaceName, _state.workspaceId)}@${_state.sshHost}`;
+  return `${_state.sshUser}@${_state.sshHost}`;
 }
 
 function isInteractiveCmd(cmd: string): boolean {
@@ -749,10 +519,4 @@ export async function interactiveSession(cmd: string, spawnFn?: (args: string[])
   logWarn(`Session ended. Rigbox workspace "${_state.workspaceName}" is still running.`);
   logWarn(`  Delete with: spawn delete -c rigbox --name ${_state.workspaceName}`);
   return exitCode;
-}
-
-// ── Misc helpers ────────────────────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
