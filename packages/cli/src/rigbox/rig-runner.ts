@@ -314,3 +314,38 @@ export async function checkRigVersion(rigPath = "rig"): Promise<void> {
 export function _resetVersionCheckCache(): void {
   _versionChecked = false;
 }
+
+// ── Line reader ───────────────────────────────────────────────
+
+/** Read a `ReadableStream<Uint8Array>` line-by-line, yielding each line
+ * as a parsed event. Empty lines are skipped. Handles partial lines
+ * across stream chunks. */
+export async function* parseLines(stream: ReadableStream<Uint8Array>): AsyncIterable<ParsedEvent> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let done = false;
+  while (!done) {
+    const result = await reader.read();
+    done = result.done;
+    if (!done && result.value) {
+      buf += decoder.decode(result.value, {
+        stream: true,
+      });
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line.length > 0) {
+          yield parseEvent(line);
+        }
+        nl = buf.indexOf("\n");
+      }
+    }
+  }
+  reader.releaseLock();
+  const tail = buf.trim();
+  if (tail.length > 0) {
+    yield parseEvent(tail);
+  }
+}

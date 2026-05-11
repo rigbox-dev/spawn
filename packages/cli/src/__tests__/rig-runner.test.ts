@@ -1,3 +1,5 @@
+import type { ParsedEvent } from "../rigbox/rig-runner";
+
 import { describe, expect, test } from "bun:test";
 import * as v from "valibot";
 import {
@@ -7,6 +9,7 @@ import {
   ErrorEventSchema,
   LoginEventSchema,
   parseEvent,
+  parseLines,
   parseSemver,
   RIG_MIN_VERSION,
   RigVersionError,
@@ -154,3 +157,74 @@ describe("checkRigVersion", () => {
     }
   });
 });
+
+describe("parseLines", () => {
+  test("yields one event per line", async () => {
+    const lines = [
+      '{"event":"creating","name":"my-ws"}',
+      '{"event":"ready","id":"ws-1","name":"my-ws","ssh_user":"u","ssh_host":"h"}',
+    ];
+    const stream = lineStream(lines.join("\n"));
+    const events: ParsedEvent[] = [];
+    for await (const ev of parseLines(stream)) {
+      events.push(ev);
+    }
+    expect(events.length).toBe(2);
+    expect(events[0]?.kind).toBe("spawn");
+    expect(events[1]?.kind).toBe("spawn");
+  });
+
+  test('yields {kind: "unknown"} for unparseable lines', async () => {
+    const stream = lineStream("not json\n");
+    const events: ParsedEvent[] = [];
+    for await (const ev of parseLines(stream)) {
+      events.push(ev);
+    }
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("unknown");
+  });
+
+  test("skips empty lines", async () => {
+    const stream = lineStream('{"event":"creating","name":"a"}\n\n{"event":"creating","name":"b"}\n');
+    const events: ParsedEvent[] = [];
+    for await (const ev of parseLines(stream)) {
+      events.push(ev);
+    }
+    expect(events.length).toBe(2);
+  });
+
+  test("handles split lines across chunks", async () => {
+    const stream = chunkedStream([
+      '{"event":"creat',
+      'ing","name":"my-ws"}\n{"event":"ready","id":"ws",',
+      '"name":"my-ws","ssh_user":"u","ssh_host":"h"}\n',
+    ]);
+    const events: ParsedEvent[] = [];
+    for await (const ev of parseLines(stream)) {
+      events.push(ev);
+    }
+    expect(events.length).toBe(2);
+  });
+});
+
+// Test helpers — build a ReadableStream<Uint8Array> from string sources.
+function lineStream(text: string): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(text));
+      controller.close();
+    },
+  });
+}
+
+function chunkedStream(chunks: string[]): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const c of chunks) {
+        controller.enqueue(enc.encode(c));
+      }
+      controller.close();
+    },
+  });
+}
