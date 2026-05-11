@@ -678,31 +678,78 @@ async function pollUntilAppsReady(workspaceId: string, expectedCount: number): P
 }
 
 /**
+ * Shell out to the rig CLI with the given argv. Arguments are passed as
+ * separate argv items (never interpolated into a shell string) so values
+ * containing shell metacharacters can't be reinterpreted. On nonzero
+ * exit, throws with rig's stderr prefix so the user sees the real cause.
+ */
+async function runRigCommand(args: string[]): Promise<void> {
+  const rig = getRigCmd();
+  if (!rig) {
+    throw new Error("rig CLI not found — install with: curl -fsSL https://rigbox.dev/install.sh | sh");
+  }
+  const proc = Bun.spawn(
+    [
+      rig,
+      ...args,
+    ],
+    {
+      stdio: [
+        "ignore",
+        "pipe",
+        "pipe",
+      ],
+    },
+  );
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const stderrText = await new Response(proc.stderr).text();
+    throw new Error(`Rigbox config update failed: ${stderrText.slice(0, 256)}`);
+  }
+}
+
+/**
  * Forward the user's OpenRouter API key into the workspace env. Called
  * after createServer in the default (non-managed) flow. The catalog
  * recipe's /etc/profile.d/<agent>-routing.sh translates this into the
  * agent's expected env shape (ANTHROPIC_*, OPENAI_*, KILO_*, native).
+ *
+ * Delegates to `rig env set` so the CLI is the single source of truth
+ * for the env-update contract — spawn no longer duplicates the REST
+ * call.
  */
 export async function setForwardedOpenRouterKey(openRouterKey: string): Promise<void> {
   if (!_state.workspaceId) {
     throw new Error("Workspace not yet created");
   }
-  await apiCallVoid("POST", `/workspaces/${_state.workspaceId}/env`, {
-    env_vars: {
-      OPENROUTER_API_KEY: openRouterKey,
-    },
-  });
+  await runRigCommand([
+    "env",
+    "set",
+    `OPENROUTER_API_KEY=${openRouterKey}`,
+    "-w",
+    _state.workspaceId,
+  ]);
 }
 
-/** Switch the workspace's AI config to Rigbox's managed proxy. */
+/**
+ * Switch the workspace's AI config to Rigbox's managed proxy.
+ *
+ * Delegates to `rig ai managed on` so the CLI owns the ai-config
+ * contract; spawn just records the mode locally for downstream branches
+ * (e.g. env-injection ordering in main.ts).
+ */
 export async function enableManagedProxy(): Promise<void> {
   if (!_state.workspaceId) {
     throw new Error("Workspace not yet created");
   }
+  await runRigCommand([
+    "ai",
+    "managed",
+    "on",
+    "-w",
+    _state.workspaceId,
+  ]);
   _state.managedMode = true;
-  await apiCallVoid("PUT", `/workspaces/${_state.workspaceId}/ai-config`, {
-    mode: "managed",
-  });
 }
 
 export function setManagedMode(managed: boolean): void {
