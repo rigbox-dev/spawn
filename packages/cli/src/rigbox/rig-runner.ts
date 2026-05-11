@@ -1,0 +1,219 @@
+// rig-runner.ts — Subprocess + NDJSON helpers around the `rig` CLI.
+//
+// All rigbox API interaction in spawn flows through this module. We
+// invoke `rig` with `--output json` and parse NDJSON lines from stdout.
+// Each line is validated against a valibot schema; unknown lines fail
+// closed (treated as a contract violation).
+
+import * as v from "valibot";
+import { tryCatch } from "../shared/result.js";
+
+// ── Login events ──────────────────────────────────────────────
+
+const SessionCreated = v.looseObject({
+  event: v.literal("session_created"),
+  code: v.string(),
+});
+const BrowserUrl = v.looseObject({
+  event: v.literal("browser_url"),
+  url: v.string(),
+});
+const Polling = v.looseObject({
+  event: v.literal("polling"),
+  elapsed_ms: v.number(),
+});
+const Approved = v.looseObject({
+  event: v.literal("approved"),
+  user_email: v.string(),
+});
+const Saved = v.looseObject({
+  event: v.literal("saved"),
+  path: v.string(),
+});
+
+/** Login NDJSON event stream from `rig login --output json`. */
+export const LoginEventSchema = v.variant("event", [
+  SessionCreated,
+  BrowserUrl,
+  Polling,
+  Approved,
+  Saved,
+]);
+export type LoginEvent = v.InferOutput<typeof LoginEventSchema>;
+
+// ── Spawn events ──────────────────────────────────────────────
+
+const Creating = v.looseObject({
+  event: v.literal("creating"),
+  name: v.string(),
+});
+const Created = v.looseObject({
+  event: v.literal("created"),
+  id: v.string(),
+  status: v.string(),
+});
+const Starting = v.looseObject({
+  event: v.literal("starting"),
+});
+const VmStatus = v.looseObject({
+  event: v.literal("vm_status"),
+  status: v.string(),
+});
+const AppsInstalling = v.looseObject({
+  event: v.literal("apps_installing"),
+  expected: v.number(),
+});
+const AppStatus = v.looseObject({
+  event: v.literal("app_status"),
+  app: v.string(),
+  status: v.string(),
+});
+const Ready = v.looseObject({
+  event: v.literal("ready"),
+  id: v.string(),
+  name: v.string(),
+  ssh_user: v.string(),
+  ssh_host: v.string(),
+});
+
+/** Spawn NDJSON event stream from `rig spawn --output json`. */
+export const SpawnEventSchema = v.variant("event", [
+  Creating,
+  Created,
+  Starting,
+  VmStatus,
+  AppsInstalling,
+  AppStatus,
+  Ready,
+]);
+export type SpawnEvent = v.InferOutput<typeof SpawnEventSchema>;
+
+// ── Single-event response schemas ─────────────────────────────
+
+/** `rig whoami --output json` — single line, two shapes. */
+export const WhoamiSchema = v.union([
+  v.looseObject({
+    authed: v.literal(true),
+    user_email: v.string(),
+    user_id: v.string(),
+    source: v.string(),
+  }),
+  v.looseObject({
+    authed: v.literal(false),
+    source: v.string(),
+  }),
+]);
+export type Whoami = v.InferOutput<typeof WhoamiSchema>;
+
+/** `rig env set/unset --output json` — single line. */
+export const EnvSetSchema = v.looseObject({
+  event: v.literal("set"),
+  workspace: v.string(),
+  keys: v.array(v.string()),
+});
+export const EnvUnsetSchema = v.looseObject({
+  event: v.literal("unset"),
+  workspace: v.string(),
+  keys: v.array(v.string()),
+});
+
+/** `rig ai mode --output json` — single line. */
+export const AiModeSchema = v.looseObject({
+  event: v.literal("mode"),
+  workspace: v.string(),
+  mode: v.string(),
+});
+
+/** `rig rm --output json` — single line. */
+export const RmSchema = v.looseObject({
+  event: v.literal("removed"),
+  workspace: v.string(),
+  workspace_id: v.string(),
+});
+
+/** `rig ssh-info --output json` — single NDJSON event. */
+export const SshInfoSchema = v.looseObject({
+  event: v.literal("ssh_info"),
+  workspace: v.string(),
+  workspace_id: v.string(),
+  status: v.string(),
+  user: v.string(),
+  host: v.string(),
+  port: v.number(),
+  ssh_target: v.string(),
+});
+export type SshInfo = v.InferOutput<typeof SshInfoSchema>;
+
+// ── Error event ────────────────────────────────────────────────
+
+export const ErrorEventSchema = v.looseObject({
+  event: v.literal("error"),
+  code: v.string(),
+  message: v.string(),
+});
+export type ErrorEvent = v.InferOutput<typeof ErrorEventSchema>;
+
+// ── Unified parser ────────────────────────────────────────────
+
+export type ParsedEvent =
+  | {
+      kind: "login";
+      data: LoginEvent;
+    }
+  | {
+      kind: "spawn";
+      data: SpawnEvent;
+    }
+  | {
+      kind: "error";
+      data: ErrorEvent;
+    }
+  | {
+      kind: "unknown";
+      raw: unknown;
+    };
+
+/** Parse a single NDJSON line into a tagged event. Falls through to
+ * `unknown` when no schema matches — the caller decides whether to
+ * treat that as a fatal contract violation (the default in streamRig)
+ * or pass through silently. */
+export function parseEvent(line: string): ParsedEvent {
+  const r = tryCatch(() => JSON.parse(line));
+  if (!r.ok) {
+    return {
+      kind: "unknown",
+      raw: line,
+    };
+  }
+  const raw = r.data;
+
+  // Try error event first — it can appear in any stream.
+  const errParsed = v.safeParse(ErrorEventSchema, raw);
+  if (errParsed.success) {
+    return {
+      kind: "error",
+      data: errParsed.output,
+    };
+  }
+
+  const loginParsed = v.safeParse(LoginEventSchema, raw);
+  if (loginParsed.success) {
+    return {
+      kind: "login",
+      data: loginParsed.output,
+    };
+  }
+
+  const spawnParsed = v.safeParse(SpawnEventSchema, raw);
+  if (spawnParsed.success) {
+    return {
+      kind: "spawn",
+      data: spawnParsed.output,
+    };
+  }
+
+  return {
+    kind: "unknown",
+    raw,
+  };
+}

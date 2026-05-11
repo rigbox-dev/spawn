@@ -496,6 +496,19 @@
       "exec_method": "sprite exec",
       "interactive_method": "sprite exec -tty",
       "icon": "https://raw.githubusercontent.com/OpenRouterTeam/spawn/main/assets/clouds/sprite.png"
+    },
+    "rigbox": {
+      "name": "Rigbox",
+      "price": "Free tier",
+      "description": "Managed Firecracker workspaces — one command to deploy AI agents with pre-baked recipes",
+      "url": "https://rigbox.dev",
+      "type": "cli",
+      "auth": "rig login (or browser-based device-code from spawn)",
+      "provision_method": "POST /v1/workspaces { catalog_ids: [<recipe>] }",
+      "exec_method": "ssh developer@<workspace>-<id-suffix>@<region>.rigbox.dev",
+      "interactive_method": "ssh -t developer@<workspace>-<id-suffix>@<region>.rigbox.dev",
+      "icon": "https://raw.githubusercontent.com/rigbox-dev/spawn/main/assets/clouds/rigbox.png",
+      "notes": "Pre-baked Rigbox catalog recipes install the agent at first_boot; spawn forwards your OpenRouter key into the workspace env (or use --managed for the Rigbox managed proxy)."
     }
   },
   "matrix": {
@@ -568,6 +581,12 @@
     "digitalocean/t3code": "implemented",
     "gcp/t3code": "implemented",
     "daytona/t3code": "implemented",
-    "sprite/t3code": "implemented"
+    "sprite/t3code": "implemented",
+    "rigbox/claude": "implemented",
+    "rigbox/codex": "implemented",
+    "rigbox/opencode": "implemented",
+    "rigbox/kilocode": "implemented",
+    "rigbox/hermes": "implemented",
+    "rigbox/openclaw": "implemented"
   }
 }
