@@ -76,7 +76,12 @@ async function main() {
       // fleet and uses the user's per-account default sizing.
     },
     async createServer(name: string) {
-      const connection = await createWorkspace(name, recipeId);
+      // The top-level CLI captures `--size <tier>` and exports the
+      // chosen tier via RIGBOX_TIER for the rigbox cloud (see
+      // index.ts:1117). Empty string means no override → use the
+      // per-agent recommended tier.
+      const sizeOverride = process.env.RIGBOX_TIER || undefined;
+      const connection = await createWorkspace(name, recipeId, agentName, sizeOverride);
 
       // After the workspace is running, wire up AI routing. Default
       // path forwards the spawn-OAuth'd OpenRouter key into the VM

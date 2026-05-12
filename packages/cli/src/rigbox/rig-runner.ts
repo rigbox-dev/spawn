@@ -90,13 +90,23 @@ export type SpawnEvent = v.InferOutput<typeof SpawnEventSchema>;
 
 // ── Single-event response schemas ─────────────────────────────
 
-/** `rig whoami --output json` — single line, two shapes. */
+/** `rig whoami --output json` — single line, two shapes.
+ *
+ * `subscription` is optional during the rollout: older rig CLIs and
+ * older servers won't emit it, in which case spawn defaults to "free"
+ * at the rigbox.ts boundary (conservative; never silently up-tier). */
 export const WhoamiSchema = v.union([
   v.looseObject({
     authed: v.literal(true),
     user_email: v.string(),
     user_id: v.string(),
     source: v.string(),
+    subscription: v.optional(
+      v.union([
+        v.literal("free"),
+        v.literal("pro"),
+      ]),
+    ),
   }),
   v.looseObject({
     authed: v.literal(false),

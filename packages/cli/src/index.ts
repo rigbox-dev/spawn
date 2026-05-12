@@ -1129,6 +1129,7 @@ async function main(): Promise<void> {
     process.env.DO_DROPLET_SIZE = sizeFlag;
     process.env.HETZNER_SERVER_TYPE = sizeFlag;
     process.env.LIGHTSAIL_BUNDLE = sizeFlag;
+    process.env.RIGBOX_TIER = sizeFlag;
   }
 
   // --output implies --headless

@@ -19,6 +19,7 @@
 //   4. Drive SSH using ssh_user and ssh_host from the ready event.
 
 import type { VMConnection } from "../history.js";
+import type { Subscription } from "./tiers.js";
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -44,6 +45,7 @@ import {
   streamRig,
   WhoamiSchema,
 } from "./rig-runner.js";
+import { resolveTier } from "./tiers.js";
 
 // ── Module state ────────────────────────────────────────────────────
 
@@ -54,6 +56,8 @@ interface RigboxState {
   sshHost: string;
   /** True when the user passed --managed (vs the default forwarded-key flow). */
   managedMode: boolean;
+  /** Rigbox plan tier captured at authenticate-time; used to size the workspace. */
+  subscription: Subscription;
 }
 
 const _state: RigboxState = {
@@ -62,6 +66,7 @@ const _state: RigboxState = {
   sshUser: "",
   sshHost: "",
   managedMode: false,
+  subscription: "free",
 };
 
 // ── Rig CLI auto-install ────────────────────────────────────────────
@@ -154,6 +159,9 @@ export async function authenticate(): Promise<void> {
     WhoamiSchema,
   ).catch(() => null);
   if (whoami?.authed) {
+    // Older rig CLIs and older servers don't emit `subscription`; default to
+    // "free" so tier resolution never silently up-tiers an unknown user.
+    _state.subscription = whoami.subscription ?? "free";
     logInfo(`Logged in as ${whoami.user_email}`);
     return;
   }
@@ -183,6 +191,20 @@ export async function authenticate(): Promise<void> {
     }
     // error events propagate through streamRig's exit handling.
   }
+
+  // Capture the now-authed subscription so the post-login createWorkspace
+  // call uses the correct tier ceiling. Swallow failures and default to
+  // "free" — the worst case is a Pro user temporarily sized as free,
+  // which is the conservative side of the trade-off.
+  const postLogin = await runRig(
+    [
+      "whoami",
+    ],
+    WhoamiSchema,
+  ).catch(() => null);
+  if (postLogin?.authed) {
+    _state.subscription = postLogin.subscription ?? "free";
+  }
 }
 
 // ── Workspace lifecycle ─────────────────────────────────────────────
@@ -200,7 +222,17 @@ export async function authenticate(): Promise<void> {
  * _state so makeConnection() can build the VMConnection without knowing
  * the workspace ID format.
  */
-export async function createWorkspace(name: string, recipeId: string | undefined): Promise<VMConnection> {
+export async function createWorkspace(
+  name: string,
+  recipeId: string | undefined,
+  agentName: string,
+  sizeOverride?: string,
+): Promise<VMConnection> {
+  // Resolve the workspace tier (RAM/disk) for this agent + plan. Errors
+  // from `resolveTier` surface as RigError and abort spawn before any
+  // workspace is provisioned.
+  const tier = resolveTier(agentName, _state.subscription, sizeOverride, (msg) => logInfo(msg));
+
   const args = [
     "spawn",
     name,
@@ -210,8 +242,14 @@ export async function createWorkspace(name: string, recipeId: string | undefined
     // --auto-size and --wait-for-apps default-on when --catalog is set,
     // so we don't need to pass them explicitly.
   }
+  // Tier sizing overrides rig's catalog-minimum default and gives the
+  // workspace steady-state headroom from the start.
+  args.push("--ram", String(tier.ramMb), "--disk", String(tier.diskMb));
 
-  logStep(`Provisioning Rigbox workspace "${name}"...`);
+  logStep(
+    `Provisioning Rigbox workspace "${name}" on the ${tier.id} tier ` +
+      `(${tier.ramMb} MB RAM, ${tier.diskMb} MB disk)...`,
+  );
 
   let readyId: string | null = null;
   let readyName: string | null = null;

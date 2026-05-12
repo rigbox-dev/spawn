@@ -70,7 +70,7 @@ describe("RigEvent schemas", () => {
     }
   });
 
-  test("WhoamiSchema parses authed: true", () => {
+  test("WhoamiSchema parses authed: true without subscription (older server)", () => {
     const parsed = v.parse(WhoamiSchema, {
       authed: true,
       user_email: "j@x",
@@ -78,6 +78,39 @@ describe("RigEvent schemas", () => {
       source: "xdg_config",
     });
     expect(parsed.authed).toBe(true);
+    if (parsed.authed) {
+      expect(parsed.subscription).toBeUndefined();
+    }
+  });
+
+  test("WhoamiSchema parses authed: true with subscription: 'free'", () => {
+    const parsed = v.parse(WhoamiSchema, {
+      authed: true,
+      user_email: "j@x",
+      user_id: "u_1",
+      source: "xdg_config",
+      subscription: "free",
+    });
+    if (parsed.authed) {
+      expect(parsed.subscription).toBe("free");
+    } else {
+      throw new Error("expected authed variant");
+    }
+  });
+
+  test("WhoamiSchema parses authed: true with subscription: 'pro'", () => {
+    const parsed = v.parse(WhoamiSchema, {
+      authed: true,
+      user_email: "j@x",
+      user_id: "u_1",
+      source: "xdg_config",
+      subscription: "pro",
+    });
+    if (parsed.authed) {
+      expect(parsed.subscription).toBe("pro");
+    } else {
+      throw new Error("expected authed variant");
+    }
   });
 
   test("WhoamiSchema parses authed: false", () => {
