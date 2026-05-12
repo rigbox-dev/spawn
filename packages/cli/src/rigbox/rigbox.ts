@@ -314,6 +314,13 @@ export async function createWorkspace(
       case "app_status":
         logInfo(`  ${ev.data.app}: ${ev.data.status}`);
         break;
+      case "floor_bumped":
+        // rig CLI bumped our --ram or --disk up to clear a
+        // catalog+template floor. Surface it so the user sees the
+        // mismatch between the tier sizing we asked for and what
+        // they actually got — useful signal for tier registry updates.
+        logWarn(`${ev.data.resource} bumped from ${ev.data.from_mb}MB to ${ev.data.to_mb}MB (${ev.data.reason})`);
+        break;
       case "ready":
         readyId = ev.data.id;
         readyName = ev.data.name;

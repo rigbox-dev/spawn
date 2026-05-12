@@ -56,6 +56,23 @@ describe("RigEvent schemas", () => {
     }
   });
 
+  test("SpawnEvent parses floor_bumped", () => {
+    const parsed = v.parse(SpawnEventSchema, {
+      event: "floor_bumped",
+      resource: "ram",
+      from_mb: 2048,
+      to_mb: 2304,
+      reason: "catalog minimums",
+    });
+    if (parsed.event === "floor_bumped") {
+      expect(parsed.from_mb).toBe(2048);
+      expect(parsed.to_mb).toBe(2304);
+      expect(parsed.reason).toBe("catalog minimums");
+    } else {
+      throw new Error("expected floor_bumped variant");
+    }
+  });
+
   test("SpawnEvent parses ready with all fields", () => {
     const parsed = v.parse(SpawnEventSchema, {
       event: "ready",

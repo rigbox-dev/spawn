@@ -75,6 +75,18 @@ const Ready = v.looseObject({
   ssh_user: v.string(),
   ssh_host: v.string(),
 });
+// Emitted by `rig spawn` (rigbox-cli v0.4.3+) when a user-supplied
+// `--ram`/`--disk` falls below the catalog+template floor and rig
+// bumps it up. Carrying the from/to/reason lets spawn (and other
+// NDJSON consumers) surface the bump without treating it as an
+// unexpected contract violation.
+const FloorBumped = v.looseObject({
+  event: v.literal("floor_bumped"),
+  resource: v.string(),
+  from_mb: v.number(),
+  to_mb: v.number(),
+  reason: v.string(),
+});
 
 /** Spawn NDJSON event stream from `rig spawn --output json`. */
 export const SpawnEventSchema = v.variant("event", [
@@ -84,6 +96,7 @@ export const SpawnEventSchema = v.variant("event", [
   VmStatus,
   AppsInstalling,
   AppStatus,
+  FloorBumped,
   Ready,
 ]);
 export type SpawnEvent = v.InferOutput<typeof SpawnEventSchema>;
