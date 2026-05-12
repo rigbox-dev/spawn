@@ -19,7 +19,8 @@
 //   4. Drive SSH using ssh_user and ssh_host from the ready event.
 
 import type { VMConnection } from "../history.js";
-import type { Subscription } from "./tiers.js";
+import type { Limits } from "./rig-runner.js";
+import type { Subscription, TierCapacity } from "./tiers.js";
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -40,12 +41,13 @@ import {
   AiModeSchema,
   checkRigVersion,
   EnvSetSchema,
+  LimitsSchema,
   RmSchema,
   runRig,
   streamRig,
   WhoamiSchema,
 } from "./rig-runner.js";
-import { resolveTier } from "./tiers.js";
+import { capacityFromLimits, fallbackCapacityFromSubscription, resolveTier } from "./tiers.js";
 
 // ── Module state ────────────────────────────────────────────────────
 
@@ -56,8 +58,13 @@ interface RigboxState {
   sshHost: string;
   /** True when the user passed --managed (vs the default forwarded-key flow). */
   managedMode: boolean;
-  /** Rigbox plan tier captured at authenticate-time; used to size the workspace. */
+  /** Rigbox plan tier captured at authenticate-time; used for upgrade-hint copy. */
   subscription: Subscription;
+  /** Effective limits + usage from `rig limits`. Null when the call failed
+   * (older rig CLI, transient error); resolver falls back to subscription
+   * defaults in that case. */
+  limits: Limits["limits"] | null;
+  usage: Limits["usage"] | null;
 }
 
 const _state: RigboxState = {
@@ -67,6 +74,8 @@ const _state: RigboxState = {
   sshHost: "",
   managedMode: false,
   subscription: "free",
+  limits: null,
+  usage: null,
 };
 
 // ── Rig CLI auto-install ────────────────────────────────────────────
@@ -162,6 +171,7 @@ export async function authenticate(): Promise<void> {
     // Older rig CLIs and older servers don't emit `subscription`; default to
     // "free" so tier resolution never silently up-tiers an unknown user.
     _state.subscription = whoami.subscription ?? "free";
+    await fetchAndStashLimits();
     logInfo(`Logged in as ${whoami.user_email}`);
     return;
   }
@@ -205,6 +215,26 @@ export async function authenticate(): Promise<void> {
   if (postLogin?.authed) {
     _state.subscription = postLogin.subscription ?? "free";
   }
+  await fetchAndStashLimits();
+}
+
+/**
+ * Best-effort fetch of `rig limits` to populate `_state.limits/usage`.
+ * On failure (older rig CLI without the `limits` command, transient
+ * network error) we leave them null and the resolver falls back to
+ * subscription-keyed defaults — the previous behavior. Never throws.
+ */
+async function fetchAndStashLimits(): Promise<void> {
+  const result = await runRig(
+    [
+      "limits",
+    ],
+    LimitsSchema,
+  ).catch(() => null);
+  if (result) {
+    _state.limits = result.limits;
+    _state.usage = result.usage;
+  }
 }
 
 // ── Workspace lifecycle ─────────────────────────────────────────────
@@ -228,10 +258,15 @@ export async function createWorkspace(
   agentName: string,
   sizeOverride?: string,
 ): Promise<VMConnection> {
-  // Resolve the workspace tier (RAM/disk) for this agent + plan. Errors
-  // from `resolveTier` surface as RigError and abort spawn before any
-  // workspace is provisioned.
-  const tier = resolveTier(agentName, _state.subscription, sizeOverride, (msg) => logInfo(msg));
+  // Capacity comes from `rig limits` when available, so any per-user
+  // override (DB column or TOML) raises the ceiling automatically.
+  // Falls back to subscription-keyed defaults when limits aren't
+  // available (older rig CLI / transient failure).
+  const capacity: TierCapacity =
+    _state.limits && _state.usage
+      ? capacityFromLimits(_state.limits, _state.usage)
+      : fallbackCapacityFromSubscription(_state.subscription);
+  const tier = resolveTier(agentName, capacity, _state.subscription, sizeOverride, (msg) => logInfo(msg));
 
   const args = [
     "spawn",

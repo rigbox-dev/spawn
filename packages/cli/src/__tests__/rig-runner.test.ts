@@ -9,6 +9,7 @@ import {
   checkRigVersion,
   compareSemver,
   ErrorEventSchema,
+  LimitsSchema,
   LoginEventSchema,
   parseEvent,
   parseLines,
@@ -119,6 +120,59 @@ describe("RigEvent schemas", () => {
       source: "none",
     });
     expect(parsed.authed).toBe(false);
+  });
+
+  test("LimitsSchema parses the canonical /v1/users/me/limits payload", () => {
+    const parsed = v.parse(LimitsSchema, {
+      event: "limits",
+      plan: "free",
+      custom: false,
+      limits: {
+        max_vms: 3,
+        max_ram_per_vm_mb: 2048,
+        max_ram_total_mb: 2048,
+        max_disk_total_mb: 10240,
+        max_vcpu_per_vm: 2,
+        max_running_vcpus: 4,
+      },
+      usage: {
+        workspace_count: 1,
+        running_vcpus: 1,
+        total_disk_mb: 4096,
+        total_ram_mb: 2048,
+      },
+    });
+    expect(parsed.plan).toBe("free");
+    expect(parsed.limits.max_ram_per_vm_mb).toBe(2048);
+    expect(parsed.usage.workspace_count).toBe(1);
+  });
+
+  test("LimitsSchema tolerates extra forward-compatible fields (looseObject)", () => {
+    // Future server may add fields like max_credits, max_concurrent_ssh, etc.
+    // Spawn should keep working without a schema bump.
+    const parsed = v.parse(LimitsSchema, {
+      event: "limits",
+      plan: "pro_managed",
+      custom: true,
+      experimental_field: "ignore-me",
+      limits: {
+        max_vms: 5,
+        max_ram_per_vm_mb: 16384,
+        max_ram_total_mb: 16384,
+        max_disk_total_mb: 30720,
+        max_vcpu_per_vm: 4,
+        max_running_vcpus: 8,
+        another_future_limit: 9999,
+      },
+      usage: {
+        workspace_count: 2,
+        running_vcpus: 2,
+        total_disk_mb: 8192,
+        total_ram_mb: 4096,
+      },
+    });
+    expect(parsed.custom).toBe(true);
+    expect(parsed.limits.max_ram_per_vm_mb).toBe(16384);
   });
 
   test("ErrorEventSchema parses canonical shape", () => {

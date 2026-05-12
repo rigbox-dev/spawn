@@ -115,6 +115,31 @@ export const WhoamiSchema = v.union([
 ]);
 export type Whoami = v.InferOutput<typeof WhoamiSchema>;
 
+/** `rig limits --output json` — single event with the user's effective
+ * resource limits (DB-column and TOML overrides already resolved by the
+ * server) plus current usage. Spawn's tier resolver consumes this to
+ * gate by *actual* per-user capacity rather than subscription→constant. */
+export const LimitsSchema = v.looseObject({
+  event: v.literal("limits"),
+  plan: v.string(),
+  custom: v.boolean(),
+  limits: v.looseObject({
+    max_vms: v.number(),
+    max_ram_per_vm_mb: v.number(),
+    max_ram_total_mb: v.number(),
+    max_disk_total_mb: v.number(),
+    max_vcpu_per_vm: v.number(),
+    max_running_vcpus: v.number(),
+  }),
+  usage: v.looseObject({
+    workspace_count: v.number(),
+    running_vcpus: v.number(),
+    total_disk_mb: v.number(),
+    total_ram_mb: v.number(),
+  }),
+});
+export type Limits = v.InferOutput<typeof LimitsSchema>;
+
 /** `rig env set/unset --output json` — single line. */
 export const EnvSetSchema = v.looseObject({
   event: v.literal("set"),
