@@ -271,6 +271,7 @@ export async function createWorkspace(
   const args = [
     "workspace",
     "spawn",
+    "-n",
     name,
   ];
   if (recipeId) {
@@ -429,6 +430,7 @@ export async function destroyWorkspace(name?: string): Promise<void> {
     [
       "workspace",
       "rm",
+      "-n",
       target,
       "--force",
     ],

@@ -278,7 +278,7 @@ export interface Semver {
  * spawn starts using a new rig surface. */
 export const RIG_MIN_VERSION: Semver = {
   major: 0,
-  minor: 5,
+  minor: 6,
   patch: 0,
 };
 
