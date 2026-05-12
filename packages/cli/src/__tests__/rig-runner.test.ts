@@ -246,10 +246,10 @@ describe("checkRigVersion semver helpers", () => {
     expect(compareSemver(a, b)).toBeGreaterThan(0);
   });
 
-  test("RIG_MIN_VERSION is 0.4.0", () => {
+  test("RIG_MIN_VERSION is 0.5.0", () => {
     expect(RIG_MIN_VERSION).toEqual({
       major: 0,
-      minor: 4,
+      minor: 5,
       patch: 0,
     });
   });

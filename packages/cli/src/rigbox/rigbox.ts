@@ -269,6 +269,7 @@ export async function createWorkspace(
   const tier = resolveTier(agentName, capacity, _state.subscription, sizeOverride, (msg) => logInfo(msg));
 
   const args = [
+    "workspace",
     "spawn",
     name,
   ];
@@ -362,6 +363,7 @@ export async function setForwardedOpenRouterKey(openRouterKey: string): Promise<
   }
   await runRig(
     [
+      "workspace",
       "env",
       "set",
       `OPENROUTER_API_KEY=${openRouterKey}`,
@@ -373,6 +375,7 @@ export async function setForwardedOpenRouterKey(openRouterKey: string): Promise<
   );
   await runRig(
     [
+      "workspace",
       "ai",
       "mode",
       "byok",
@@ -396,6 +399,7 @@ export async function enableManagedProxy(): Promise<void> {
   }
   await runRig(
     [
+      "workspace",
       "ai",
       "mode",
       "managed",
@@ -423,6 +427,7 @@ export async function destroyWorkspace(name?: string): Promise<void> {
   }
   await runRig(
     [
+      "workspace",
       "rm",
       target,
       "--force",
