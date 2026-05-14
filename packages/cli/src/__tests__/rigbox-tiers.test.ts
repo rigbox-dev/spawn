@@ -22,12 +22,16 @@ const PRO_DEFAULT_CAPACITY: TierCapacity = fallbackCapacityFromSubscription("pro
 // Override scenarios — what the new resolver is for.
 const FREE_WITH_RAM_OVERRIDE_4GB: TierCapacity = {
   maxRamPerVmMb: 4096,
+  maxVcpuPerVm: 2,
+  remainingRunningVcpus: 4,
   remainingDiskMb: 10240,
   remainingVmSlots: 3,
 };
 
 const PRO_NEAR_DISK_CAPACITY: TierCapacity = {
   maxRamPerVmMb: 8192,
+  maxVcpuPerVm: 4,
+  remainingRunningVcpus: 4,
   remainingDiskMb: 4096, // exactly enough for starter/agent's 4 GB disk, not heavy's 8 GB
   remainingVmSlots: 3,
 };
@@ -36,20 +40,42 @@ const PRO_NEAR_DISK_CAPACITY: TierCapacity = {
 // so the resolver should down-tier any "agent" recommendation.
 const FREE_RAM_WEDGE_3GB: TierCapacity = {
   maxRamPerVmMb: 3072,
+  maxVcpuPerVm: 2,
+  remainingRunningVcpus: 4,
   remainingDiskMb: 10240,
   remainingVmSlots: 3,
 };
 
 const FREE_ZERO_SLOTS: TierCapacity = {
   maxRamPerVmMb: 2048,
+  maxVcpuPerVm: 2,
+  remainingRunningVcpus: 4,
   remainingDiskMb: 10240,
   remainingVmSlots: 0,
 };
 
 const FREE_DISK_EXHAUSTED: TierCapacity = {
   maxRamPerVmMb: 2048,
+  maxVcpuPerVm: 2,
+  remainingRunningVcpus: 4,
   remainingDiskMb: 1024, // less than every tier's 4 GB disk floor
   remainingVmSlots: 1,
+};
+
+const PRO_CPU_EXHAUSTED: TierCapacity = {
+  maxRamPerVmMb: 8192,
+  maxVcpuPerVm: 4,
+  remainingRunningVcpus: 1,
+  remainingDiskMb: 20480,
+  remainingVmSlots: 3,
+};
+
+const PRO_PER_VM_CPU_CAP_2: TierCapacity = {
+  maxRamPerVmMb: 8192,
+  maxVcpuPerVm: 2,
+  remainingRunningVcpus: 4,
+  remainingDiskMb: 20480,
+  remainingVmSlots: 3,
 };
 
 // Tests ──────────────────────────────────────────────────────────────
@@ -137,6 +163,24 @@ describe("resolveTier — override rejection with actionable error", () => {
     }
   });
 
+  test("--size heavy with low per-VM CPU cap throws with CPU reason", () => {
+    const r = tryCatch(() => resolveTier("pi", PRO_PER_VM_CPU_CAP_2, "pro", "heavy", sink));
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error instanceof RigError) {
+      expect(r.error.code).toBe("validation");
+      expect(r.error.message).toContain("4 vCPU");
+      expect(r.error.message).toContain("2 vCPU per VM");
+    }
+  });
+
+  test("low remaining running vCPU down-tiers to nano with CPU warning", () => {
+    const warnings: string[] = [];
+    const tier = resolveTier("pi", PRO_CPU_EXHAUSTED, "pro", undefined, (m) => warnings.push(m));
+    expect(tier.id).toBe("nano");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("running vCPU remaining");
+  });
+
   test("unknown --size value throws RigError listing the valid tiers", () => {
     const r = tryCatch(() => resolveTier("pi", FREE_DEFAULT_CAPACITY, "free", "xlarge", sink));
     expect(r.ok).toBe(false);
@@ -187,6 +231,8 @@ describe("capacityFromLimits + fallbackCapacityFromSubscription", () => {
       },
     );
     expect(cap.maxRamPerVmMb).toBe(8192);
+    expect(cap.maxVcpuPerVm).toBe(4);
+    expect(cap.remainingRunningVcpus).toBe(2); // 4 − 2
     expect(cap.remainingDiskMb).toBe(12288); // 20480 − 8192
     expect(cap.remainingVmSlots).toBe(3); // 5 − 2
   });
@@ -209,6 +255,7 @@ describe("capacityFromLimits + fallbackCapacityFromSubscription", () => {
         total_ram_mb: 4096,
       },
     );
+    expect(cap.remainingRunningVcpus).toBe(0);
     expect(cap.remainingDiskMb).toBe(0);
     expect(cap.remainingVmSlots).toBe(0);
   });
@@ -216,11 +263,15 @@ describe("capacityFromLimits + fallbackCapacityFromSubscription", () => {
   test("fallbackCapacityFromSubscription matches the server's FREE/PRO defaults", () => {
     const free = fallbackCapacityFromSubscription("free");
     expect(free.maxRamPerVmMb).toBe(2048);
+    expect(free.maxVcpuPerVm).toBe(2);
+    expect(free.remainingRunningVcpus).toBe(4);
     expect(free.remainingDiskMb).toBe(10240);
     expect(free.remainingVmSlots).toBe(3);
 
     const pro = fallbackCapacityFromSubscription("pro");
     expect(pro.maxRamPerVmMb).toBe(8192);
+    expect(pro.maxVcpuPerVm).toBe(4);
+    expect(pro.remainingRunningVcpus).toBe(4);
     expect(pro.remainingDiskMb).toBe(20480);
     expect(pro.remainingVmSlots).toBe(5);
   });

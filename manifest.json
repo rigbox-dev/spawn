@@ -504,10 +504,10 @@
       "url": "https://rigbox.dev",
       "type": "cli",
       "auth": "rig login (or browser-based device-code from spawn)",
-      "provision_method": "POST /v1/workspaces { catalog_ids: [<recipe>] }",
+      "provision_method": "rig workspace spawn --catalog <recipe>",
       "exec_method": "ssh developer@<workspace>-<id-suffix>@<region>.rigbox.dev",
       "interactive_method": "ssh -t developer@<workspace>-<id-suffix>@<region>.rigbox.dev",
-      "icon": "https://raw.githubusercontent.com/rigbox-dev/spawn/main/assets/clouds/rigbox.png",
+      "icon": "https://raw.githubusercontent.com/OpenRouterTeam/spawn/main/assets/clouds/rigbox.png",
       "notes": "Pre-baked Rigbox catalog recipes install the agent at first_boot; spawn forwards your OpenRouter key into the workspace env (or use --managed for the Rigbox managed proxy)."
     }
   },
@@ -587,6 +587,10 @@
     "rigbox/opencode": "implemented",
     "rigbox/kilocode": "implemented",
     "rigbox/hermes": "implemented",
-    "rigbox/openclaw": "implemented"
+    "rigbox/openclaw": "implemented",
+    "rigbox/junie": "implemented",
+    "rigbox/pi": "implemented",
+    "rigbox/cursor": "missing",
+    "rigbox/t3code": "implemented"
   }
 }

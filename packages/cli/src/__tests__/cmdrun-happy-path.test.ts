@@ -44,6 +44,12 @@ const { cmdRun } = await import("../commands/index.js");
 
 const VALID_SCRIPT = "#!/bin/bash\nset -eo pipefail\nexit 0";
 
+function isSpawnScriptFetch(url: string): boolean {
+  return (
+    url.includes("openrouter.ai/labs/spawn/") || (url.includes("raw.githubusercontent.com") && url.includes("/sh/"))
+  );
+}
+
 /** Track all fetch calls to verify download behavior */
 let fetchCalls: Array<{
   url: string;
@@ -76,7 +82,7 @@ function mockFetchForDownload(opts: {
     }
 
     // Primary script URL (openrouter.ai)
-    if (urlStr.includes("openrouter.ai")) {
+    if (urlStr.includes("openrouter.ai/labs/spawn/")) {
       if (primaryOk) {
         return new Response(scriptContent, {
           status: primaryStatus,
@@ -89,7 +95,7 @@ function mockFetchForDownload(opts: {
     }
 
     // Fallback script URL (raw.githubusercontent.com)
-    if (urlStr.includes("raw.githubusercontent.com")) {
+    if (urlStr.includes("raw.githubusercontent.com") && urlStr.includes("/sh/")) {
       if (fallbackOk) {
         return new Response(scriptContent, {
           status: fallbackStatus,
@@ -171,7 +177,7 @@ describe("cmdRun happy-path pipeline", () => {
       await cmdRun("claude", "sprite");
 
       // Should have fetched the manifest + the primary script URL
-      const scriptFetches = fetchCalls.filter((c) => !c.url.includes("manifest.json"));
+      const scriptFetches = fetchCalls.filter((c) => isSpawnScriptFetch(c.url));
       expect(scriptFetches.length).toBe(1);
       expect(scriptFetches[0].url).toContain("openrouter.ai");
     });
@@ -215,7 +221,7 @@ describe("cmdRun happy-path pipeline", () => {
       await cmdRun("claude", "sprite");
 
       // Should have fetched manifest + primary (failed) + fallback (success)
-      const scriptFetches = fetchCalls.filter((c) => !c.url.includes("manifest.json"));
+      const scriptFetches = fetchCalls.filter((c) => isSpawnScriptFetch(c.url));
       expect(scriptFetches.length).toBe(2);
       expect(scriptFetches[0].url).toContain("openrouter.ai");
       expect(scriptFetches[1].url).toContain("raw.githubusercontent.com");
@@ -451,7 +457,7 @@ describe("cmdRun happy-path pipeline", () => {
       await cmdRun("claude", "sprite", undefined, true);
 
       // No script download — only manifest fetch
-      const scriptFetches = fetchCalls.filter((c) => c.url.includes("openrouter.ai") && !c.url.includes("manifest"));
+      const scriptFetches = fetchCalls.filter((c) => isSpawnScriptFetch(c.url));
       expect(scriptFetches).toHaveLength(0);
 
       // No history written

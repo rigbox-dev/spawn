@@ -15,6 +15,9 @@ bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/openclaw.sh)
 bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/opencode.sh)
 bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/hermes.sh)
 bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/kilocode.sh)
+bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/junie.sh)
+bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/pi.sh)
+bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/t3code.sh)
 ```
 
 ## What happens
@@ -22,8 +25,8 @@ bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/kilocode.sh)
 1. First-time users are pushed through a browser-based Rigbox login
    (device-code flow against `POST /auth/cli-session`). `rig` CLI
    users have their existing login reused automatically.
-2. `POST /v1/workspaces { catalog_ids: ["<recipe>"] }` provisions a
-   workspace with the agent install script baked in.
+2. `rig workspace spawn --catalog <recipe>` provisions a workspace
+   with the agent install script baked in.
 3. The user's spawn-OAuth'd OpenRouter key is forwarded into the
    workspace env via `POST /v1/workspaces/{id}/env`. The recipe's
    `/etc/profile.d/<agent>-routing.sh` translates `OPENROUTER_*` into
@@ -36,6 +39,8 @@ bash <(curl -fsSL https://openrouter.ai/labs/spawn/rigbox/kilocode.sh)
 
 - `--managed` — route AI through Rigbox's managed proxy instead of
   forwarding your OpenRouter key. One bill on Rigbox.
+- `--size nano|starter|agent|heavy` — override Spawn's recommended
+  Rigbox tier. Spawn passes RAM, disk, and vCPU to `rig`.
 - `RIG_API_KEY=rb_…` — headless override, skips the browser login.
 
 ## Cleanup

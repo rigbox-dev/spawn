@@ -17,7 +17,7 @@ const mockTryTarballInstall = mock(() => Promise.resolve(false));
 import type { AgentConfig } from "../shared/agents";
 import type { CloudOrchestrator, OrchestrationOptions } from "../shared/orchestrate";
 
-import { setupAutoUpdate, setupSecurityScan } from "../shared/agent-setup";
+import { createCloudAgents, setupAutoUpdate, setupSecurityScan } from "../shared/agent-setup";
 import { runOrchestration } from "../shared/orchestrate";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -176,6 +176,26 @@ describe("auto-update service", () => {
       expect(decoded).toContain("LOCKFILE");
     });
 
+    it("accepts the T3 Code update command without shell interpolation markers", async () => {
+      const runServer = mock(() => Promise.resolve());
+      const runner = {
+        runServer,
+        uploadFile: mock(() => Promise.resolve()),
+        downloadFile: mock(() => Promise.resolve()),
+      };
+      const { agents } = createCloudAgents(runner);
+
+      await setupAutoUpdate(runner, "t3code", agents.t3code.updateCmd!);
+
+      const script = runServer.mock.calls[0][0];
+      const wrapperMatch =
+        /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| \$_sudo tee \/usr\/local\/bin\/spawn-auto-update/.exec(script);
+      expect(wrapperMatch).toBeTruthy();
+      const decoded = Buffer.from(wrapperMatch![1], "base64").toString("utf-8");
+      expect(decoded).toContain("npm install -g $_NPM_G_FLAGS t3@latest");
+      expect(decoded).not.toContain("${");
+    });
+
     it("includes system updates with dpkg lock coordination", async () => {
       const runServer = mock(() => Promise.resolve());
       const runner = {
@@ -266,6 +286,30 @@ describe("auto-update service", () => {
       const calls = runServer.mock.calls.map((c) => c[0]);
       const autoUpdateCall = calls.find((cmd: string) => isString(cmd) && cmd.includes("spawn-auto-update"));
       expect(autoUpdateCall).toBeTruthy();
+    });
+
+    it("uses cloud-provided auto-update hooks instead of the shared systemd timer", async () => {
+      const runServer = mock(() => Promise.resolve());
+      const setupAutoUpdateHook = mock(() => Promise.resolve());
+      const cloud = createMockCloud({
+        cloudName: "rigbox",
+        setupAutoUpdate: setupAutoUpdateHook,
+        runner: {
+          runServer,
+          uploadFile: mock(() => Promise.resolve()),
+          downloadFile: mock(() => Promise.resolve()),
+        },
+      });
+      const agent = createMockAgent({
+        updateCmd: "npm install -g test-agent@latest",
+      });
+
+      await runOrchestrationSafe(cloud, agent, "testagent");
+
+      expect(setupAutoUpdateHook).toHaveBeenCalledWith("testagent", "npm install -g test-agent@latest");
+      const calls = runServer.mock.calls.map((c) => c[0]);
+      const autoUpdateCall = calls.find((cmd: string) => isString(cmd) && cmd.includes("spawn-auto-update"));
+      expect(autoUpdateCall).toBeUndefined();
     });
 
     it("skips setupAutoUpdate for local cloud", async () => {

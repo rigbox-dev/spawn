@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { tryCatch } from "@openrouter/spawn-shared";
 
@@ -30,6 +31,7 @@ function writeUpdateFailed(timestamp: number) {
 
 describe("update-check.ts coverage", () => {
   let originalEnv: NodeJS.ProcessEnv;
+  let testHome: string;
   let consoleSpy: ReturnType<typeof spyOn>;
   let processExitSpy: ReturnType<typeof spyOn>;
   let originalFetch: typeof global.fetch;
@@ -39,6 +41,8 @@ describe("update-check.ts coverage", () => {
       ...process.env,
     };
     originalFetch = global.fetch;
+    testHome = fs.mkdtempSync(path.join(os.tmpdir(), "spawn-update-check-cov-"));
+    process.env.HOME = testHome;
     process.env.NODE_ENV = undefined;
     process.env.BUN_ENV = undefined;
     process.env.SPAWN_NO_UPDATE_CHECK = undefined;
@@ -53,6 +57,10 @@ describe("update-check.ts coverage", () => {
   afterEach(() => {
     process.env = originalEnv;
     global.fetch = originalFetch;
+    fs.rmSync(testHome, {
+      recursive: true,
+      force: true,
+    });
     consoleSpy.mockRestore();
     processExitSpy.mockRestore();
   });

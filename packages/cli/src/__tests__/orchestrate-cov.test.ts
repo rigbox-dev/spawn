@@ -86,6 +86,7 @@ beforeEach(() => {
   savedSpawnHome = process.env.SPAWN_HOME;
   process.env.SPAWN_HOME = testDir;
   process.env.SPAWN_SKIP_GITHUB_AUTH = "1";
+  process.env.SPAWN_NO_BROWSER = "1";
   delete process.env.SPAWN_ENABLED_STEPS;
   delete process.env.SPAWN_BETA;
   delete process.env.MODEL_ID;
@@ -136,6 +137,33 @@ describe("orchestrate skipAgentInstall", () => {
     await runSafe(cloud, agent, "testagent");
 
     expect(install).not.toHaveBeenCalled();
+  });
+
+  it("lets clouds own env provisioning and skip shared agent config", async () => {
+    const configureAgentEnvironment = mock(() => Promise.resolve());
+    const envVars = mock(() => [
+      "OPENROUTER_API_KEY=should-not-be-rendered",
+    ]);
+    const configure = mock(() => Promise.resolve());
+    const cloud = createMockCloud({
+      skipSharedEnvInjection: true,
+      skipAgentConfigure: true,
+      configureAgentEnvironment,
+    });
+    const agent = createMockAgent({
+      envVars,
+      configure,
+    });
+
+    await runSafe(cloud, agent, "testagent");
+
+    expect(configureAgentEnvironment).toHaveBeenCalledTimes(1);
+    const context = configureAgentEnvironment.mock.calls[0][0];
+    expect(context.apiKey).toBe("sk-or-v1-test-key");
+    expect(context.agentName).toBe("testagent");
+    expect(typeof context.spawnId).toBe("string");
+    expect(envVars).not.toHaveBeenCalled();
+    expect(configure).not.toHaveBeenCalled();
   });
 });
 

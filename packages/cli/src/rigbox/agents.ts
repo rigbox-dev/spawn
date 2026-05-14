@@ -2,8 +2,8 @@
 //
 // Rigbox ships pre-baked catalog recipes for a subset of spawn's agents.
 // When the spawn agent has a matching recipe, we pass that ID to
-// `POST /v1/workspaces { catalog_ids: [...] }` so the agent installs
-// during VM boot (Mode A). The orchestrator then sets
+// `rig workspace spawn --catalog <recipe>` so the agent installs during
+// VM boot (Mode A). The orchestrator then sets
 // `skipAgentInstall: true` so spawn does not also try to install.
 //
 // Agents without a recipe (currently cursor) error out — spawn-on-rigbox

@@ -30,6 +30,7 @@ import {
   runServer,
   setForwardedOpenRouterKey,
   setManagedMode,
+  showRecipeAccessHints,
   uploadFile,
 } from "./rigbox.js";
 
@@ -61,6 +62,11 @@ async function main() {
     // The catalog recipe installs the agent during first_boot — spawn
     // skips its own install path entirely.
     skipAgentInstall: true,
+    // Rigbox recipes install routing profiles and consume keys via the
+    // workspace env API, so the shared ~/.spawnrc + agent.configure path
+    // would duplicate and sometimes override the vended recipe contract.
+    skipSharedEnvInjection: true,
+    skipAgentConfigure: true,
     // Rigbox workspaces do not run cloud-init the way Hetzner/DO do.
     skipCloudInit: true,
     runner: {
@@ -81,29 +87,27 @@ async function main() {
       // index.ts:1117). Empty string means no override → use the
       // per-agent recommended tier.
       const sizeOverride = process.env.RIGBOX_TIER || undefined;
-      const connection = await createWorkspace(name, recipeId, agentName, sizeOverride);
-
-      // After the workspace is running, wire up AI routing. Default
-      // path forwards the spawn-OAuth'd OpenRouter key into the VM
-      // env. The agent's /etc/profile.d/<agent>-routing.sh on the
-      // Rigbox side translates that into the agent-native env shape.
+      return createWorkspace(name, recipeId, agentName, sizeOverride);
+    },
+    async configureAgentEnvironment({ apiKey }) {
+      // After credentials and workspace readiness are resolved, wire up
+      // AI routing. Default path forwards the spawn-OAuth'd OpenRouter
+      // key into the VM env. The recipe's profile scripts translate it
+      // into the agent-native env shape.
       if (isManagedMode()) {
         logStep("Switching workspace to Rigbox managed AI proxy");
         await enableManagedProxy();
       } else {
-        const openRouterKey = process.env.OPENROUTER_API_KEY;
-        if (openRouterKey) {
-          logStep("Forwarding OpenRouter key into the workspace env");
-          await setForwardedOpenRouterKey(openRouterKey);
-        } else {
-          logInfo(
-            "OPENROUTER_API_KEY not set — workspace will boot without a forwarded key. " +
-              "Use --managed for the Rigbox managed proxy, or `rig ssh-info` to wire one in manually.",
-          );
-        }
+        logStep("Forwarding OpenRouter key into the workspace env");
+        await setForwardedOpenRouterKey(apiKey);
       }
-
-      return connection;
+      await showRecipeAccessHints(recipeId);
+    },
+    async setupAutoUpdate() {
+      // Rigbox catalog recipes own app installation and update policy.
+      // The shared Spawn systemd timer assumes Spawn installed the agent
+      // binary itself, which is not true for recipe-backed workspaces.
+      logInfo("Rigbox catalog recipes manage app updates; skipping Spawn auto-update timer");
     },
     getServerName,
     async waitForReady() {
@@ -123,7 +127,16 @@ async function main() {
   // strip it; expose via a side channel when upstream wires delete.
   void destroyWorkspace;
 
-  await runOrchestration(cloud, agent, agentName);
+  await runOrchestration(
+    cloud,
+    agent,
+    agentName,
+    isManagedMode()
+      ? {
+          getApiKey: async () => "managed-by-rigbox",
+        }
+      : undefined,
+  );
 }
 
 initTelemetry(pkg.version);

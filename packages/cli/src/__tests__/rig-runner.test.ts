@@ -6,6 +6,7 @@ import { join } from "node:path";
 import * as v from "valibot";
 import {
   _resetVersionCheckCache,
+  AppListSchema,
   checkRigVersion,
   compareSemver,
   ErrorEventSchema,
@@ -18,6 +19,8 @@ import {
   RigVersionError,
   runRig,
   SpawnEventSchema,
+  SshKeyAddedSchema,
+  SshKeyListSchema,
   streamRig,
   WhoamiSchema,
 } from "../rigbox/rig-runner";
@@ -129,6 +132,48 @@ describe("RigEvent schemas", () => {
     } else {
       throw new Error("expected authed variant");
     }
+  });
+
+  test("AppListSchema preserves catalog credentials", () => {
+    const parsed = v.parse(AppListSchema, {
+      event: "apps",
+      apps: [
+        {
+          id: "app-1",
+          name: "T3 Code",
+          workspace_id: "ws-1",
+          url: "t3code-demo.rigbox.dev",
+          port: 3773,
+          status: "active",
+          visibility: "private",
+          credentials: {
+            desktop_bootstrap_token: "PAIR123",
+          },
+        },
+      ],
+    });
+    expect(parsed.apps[0]?.credentials?.desktop_bootstrap_token).toBe("PAIR123");
+  });
+
+  test("SshKey schemas parse Rigbox account key events", () => {
+    const list = v.parse(SshKeyListSchema, {
+      event: "ssh_keys",
+      ssh_keys: [
+        {
+          id: "key-1",
+          name: "spawn_ed25519",
+          fingerprint: "SHA256:abc123",
+          created_at: "2026-05-14T00:00:00Z",
+        },
+      ],
+    });
+    expect(list.ssh_keys[0]?.fingerprint).toBe("SHA256:abc123");
+
+    const added = v.parse(SshKeyAddedSchema, {
+      event: "ssh_key_added",
+      name: "spawn_ed25519",
+    });
+    expect(added.name).toBe("spawn_ed25519");
   });
 
   test("WhoamiSchema parses authed: false", () => {
@@ -246,11 +291,11 @@ describe("checkRigVersion semver helpers", () => {
     expect(compareSemver(a, b)).toBeGreaterThan(0);
   });
 
-  test("RIG_MIN_VERSION is 0.6.0", () => {
+  test("RIG_MIN_VERSION is 0.6.8", () => {
     expect(RIG_MIN_VERSION).toEqual({
       major: 0,
       minor: 6,
-      patch: 0,
+      patch: 8,
     });
   });
 });

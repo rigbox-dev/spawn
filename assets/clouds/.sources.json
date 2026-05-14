@@ -22,5 +22,9 @@
   "sprite": {
     "url": "https://sprites.dev/images/favicon/apple-touch-icon.png",
     "ext": "png"
+  },
+  "rigbox": {
+    "url": "https://rigbox.dev/favicon.svg",
+    "ext": "png"
   }
 }

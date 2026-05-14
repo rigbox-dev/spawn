@@ -149,6 +149,11 @@ export async function selectFromList(items: string[], promptText: string, defaul
 
 /** Open a URL in the user's browser. */
 export function openBrowser(url: string): void {
+  if (process.env.SPAWN_NO_BROWSER === "1") {
+    logStep(`Please open: ${url}`);
+    return;
+  }
+
   const cmds: [
     string,
     string[],

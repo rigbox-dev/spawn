@@ -95,12 +95,14 @@ export const SPAWN_AGENT_TIER: Record<string, string> = {
 
 /**
  * Per-spawn capacity envelope derived from `rig limits` (or the hardcoded
- * fallback when limits aren't available). Only the three fields that
- * matter for tier selection — RAM ceiling per VM, remaining disk in the
- * account budget, and remaining workspace slots.
+ * fallback when limits aren't available). These are the fields that matter
+ * for tier selection: per-VM RAM/CPU ceilings, remaining running CPU, disk
+ * budget, and remaining workspace slots.
  */
 export interface TierCapacity {
   maxRamPerVmMb: number;
+  maxVcpuPerVm: number;
+  remainingRunningVcpus: number;
   remainingDiskMb: number;
   remainingVmSlots: number;
 }
@@ -109,6 +111,8 @@ export interface TierCapacity {
 export function capacityFromLimits(limits: Limits["limits"], usage: Limits["usage"]): TierCapacity {
   return {
     maxRamPerVmMb: limits.max_ram_per_vm_mb,
+    maxVcpuPerVm: limits.max_vcpu_per_vm,
+    remainingRunningVcpus: Math.max(0, limits.max_running_vcpus - usage.running_vcpus),
     remainingDiskMb: Math.max(0, limits.max_disk_total_mb - usage.total_disk_mb),
     remainingVmSlots: Math.max(0, limits.max_vms - usage.workspace_count),
   };
@@ -128,19 +132,29 @@ export function fallbackCapacityFromSubscription(plan: Subscription): TierCapaci
   if (plan === "pro") {
     return {
       maxRamPerVmMb: 8192,
+      maxVcpuPerVm: 4,
+      remainingRunningVcpus: 4,
       remainingDiskMb: 20480,
       remainingVmSlots: 5,
     };
   }
   return {
     maxRamPerVmMb: 2048,
+    maxVcpuPerVm: 2,
+    remainingRunningVcpus: 4,
     remainingDiskMb: 10240,
     remainingVmSlots: 3,
   };
 }
 
 function fitsCapacity(tier: SpawnTier, cap: TierCapacity): boolean {
-  return tier.ramMb <= cap.maxRamPerVmMb && tier.diskMb <= cap.remainingDiskMb && cap.remainingVmSlots >= 1;
+  return (
+    tier.ramMb <= cap.maxRamPerVmMb &&
+    tier.vcpuCount <= cap.maxVcpuPerVm &&
+    tier.vcpuCount <= cap.remainingRunningVcpus &&
+    tier.diskMb <= cap.remainingDiskMb &&
+    cap.remainingVmSlots >= 1
+  );
 }
 
 /**
@@ -165,6 +179,12 @@ function explainOverflow(tier: SpawnTier, cap: TierCapacity): string {
   }
   if (tier.diskMb > cap.remainingDiskMb) {
     reasons.push(`needs ${tier.diskMb} MB disk but only ${cap.remainingDiskMb} MB remaining in your account budget`);
+  }
+  if (tier.vcpuCount > cap.maxVcpuPerVm) {
+    reasons.push(`needs ${tier.vcpuCount} vCPU but your account is capped at ${cap.maxVcpuPerVm} vCPU per VM`);
+  }
+  if (tier.vcpuCount > cap.remainingRunningVcpus) {
+    reasons.push(`needs ${tier.vcpuCount} running vCPU but only ${cap.remainingRunningVcpus} vCPU remain`);
   }
   if (cap.remainingVmSlots < 1) {
     reasons.push("you're already at your workspace limit");
@@ -234,13 +254,14 @@ export function resolveTier(
   if (!fallback) {
     throw new RigError(
       "capacity_exceeded",
-      `No workspace size fits your remaining capacity (${capacity.maxRamPerVmMb} MB RAM cap, ${capacity.remainingDiskMb} MB disk). ${upgradeHint(subscription)}`,
+      `No workspace size fits your remaining capacity (${capacity.maxRamPerVmMb} MB RAM cap, ${capacity.maxVcpuPerVm} vCPU cap, ${capacity.remainingRunningVcpus} running vCPU remaining, ${capacity.remainingDiskMb} MB disk). ${upgradeHint(subscription)}`,
       1,
     );
   }
   logWarn(
-    `${agentName} recommends the '${recommended.id}' tier (${recommended.ramMb} MB RAM, ${recommended.diskMb} MB disk) ` +
-      `but your account is capped at ${capacity.maxRamPerVmMb} MB per VM with ${capacity.remainingDiskMb} MB disk remaining. ` +
+    `${agentName} recommends the '${recommended.id}' tier (${recommended.ramMb} MB RAM, ${recommended.vcpuCount} vCPU, ${recommended.diskMb} MB disk) ` +
+      `but your account is capped at ${capacity.maxRamPerVmMb} MB RAM per VM, ${capacity.maxVcpuPerVm} vCPU per VM, ` +
+      `${capacity.remainingRunningVcpus} running vCPU remaining, and ${capacity.remainingDiskMb} MB disk remaining. ` +
       `Falling back to '${fallback.id}'. ${upgradeHint(subscription)}`,
   );
   return fallback;

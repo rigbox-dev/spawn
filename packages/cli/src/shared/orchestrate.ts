@@ -139,6 +139,10 @@ export interface CloudOrchestrator {
   runner: CloudRunner;
   /** When true, skip tarball + agent install (e.g. booting from a pre-baked snapshot). */
   skipAgentInstall?: boolean;
+  /** When true, the cloud owns agent env provisioning and shared ~/.spawnrc injection is skipped. */
+  skipSharedEnvInjection?: boolean;
+  /** When true, the cloud/pre-baked image owns agent-native config and agent.configure is skipped. */
+  skipAgentConfigure?: boolean;
   /** When true, skip cloud-init wait — just wait for SSH (e.g. minimal-tier agent with tarball). */
   skipCloudInit?: boolean;
   authenticate(): Promise<void>;
@@ -159,6 +163,13 @@ export interface CloudOrchestrator {
   getSignedPreviewUrl?(remotePort: number, urlSuffix?: string, expiresInSeconds?: number): Promise<string>;
   /** Install a provider-native auto-update mechanism when the shared systemd timer does not apply. */
   setupAutoUpdate?(agentName: string, updateCmd: string): Promise<void>;
+  /** Cloud-specific credential/config routing that must run after provisioning and credential resolution. */
+  configureAgentEnvironment?(context: {
+    apiKey: string;
+    modelId?: string;
+    agentName: string;
+    spawnId: string;
+  }): Promise<void>;
 }
 
 /**
@@ -472,15 +483,26 @@ export async function runOrchestration(
         logWarn(`Ignoring invalid MODEL_ID: ${rawModelId}`);
       }
 
+      await cloud.configureAgentEnvironment?.({
+        apiKey,
+        modelId,
+        agentName,
+        spawnId,
+      });
+
       // Env config (computed locally, no SSH needed)
-      const envPairs = agent.envVars(apiKey);
-      if (modelId && agent.modelEnvVar) {
-        envPairs.push(`${agent.modelEnvVar}=${modelId}`);
-      }
-      if (betaFeatures.has("recursive")) {
-        appendRecursiveEnvVars(envPairs, spawnId);
-      }
-      const envContent = generateEnvConfig(envPairs);
+      const envContent = cloud.skipSharedEnvInjection
+        ? null
+        : (() => {
+            const envPairs = agent.envVars(apiKey);
+            if (modelId && agent.modelEnvVar) {
+              envPairs.push(`${agent.modelEnvVar}=${modelId}`);
+            }
+            if (betaFeatures.has("recursive")) {
+              appendRecursiveEnvVars(envPairs, spawnId);
+            }
+            return generateEnvConfig(envPairs);
+          })();
 
       // Install agent — remote tarball, fallback to live install
       if (cloud.skipAgentInstall) {
@@ -506,7 +528,9 @@ export async function runOrchestration(
 
       // Inject env + continue with shared post-install flow
       clearInterval(keepAlive);
-      await injectEnvVars(cloud, envContent);
+      if (envContent) {
+        await injectEnvVars(cloud, envContent);
+      }
       await postInstall(cloud, agent, agentName, apiKey, modelId, spawnId, options);
     } else {
       // ── Standard sequential flow ────────────────────────────────────────
@@ -565,15 +589,26 @@ export async function runOrchestration(
       }
       trackFunnel("funnel_vm_ready");
 
+      await cloud.configureAgentEnvironment?.({
+        apiKey,
+        modelId,
+        agentName,
+        spawnId,
+      });
+
       // 7. Env config
-      const envPairs = agent.envVars(apiKey);
-      if (modelId && agent.modelEnvVar) {
-        envPairs.push(`${agent.modelEnvVar}=${modelId}`);
-      }
-      if (betaFeatures.has("recursive")) {
-        appendRecursiveEnvVars(envPairs, spawnId);
-      }
-      const envContent = generateEnvConfig(envPairs);
+      const envContent = cloud.skipSharedEnvInjection
+        ? null
+        : (() => {
+            const envPairs = agent.envVars(apiKey);
+            if (modelId && agent.modelEnvVar) {
+              envPairs.push(`${agent.modelEnvVar}=${modelId}`);
+            }
+            if (betaFeatures.has("recursive")) {
+              appendRecursiveEnvVars(envPairs, spawnId);
+            }
+            return generateEnvConfig(envPairs);
+          })();
 
       // 8. Install agent
       if (cloud.skipAgentInstall) {
@@ -598,7 +633,9 @@ export async function runOrchestration(
       trackFunnel("funnel_install_completed");
 
       // Inject env + continue with shared post-install flow
-      await injectEnvVars(cloud, envContent);
+      if (envContent) {
+        await injectEnvVars(cloud, envContent);
+      }
       await postInstall(cloud, agent, agentName, apiKey, modelId, spawnId, options);
     }
   });
@@ -713,7 +750,7 @@ async function postInstall(
   }
 
   // Agent-specific configuration
-  if (agent.configure) {
+  if (agent.configure && !cloud.skipAgentConfigure) {
     const configResult = await asyncTryCatch(() =>
       withRetry("agent config", () => wrapSshCall(agent.configure!(apiKey, modelId, enabledSteps)), 2, 5),
     );

@@ -2,6 +2,7 @@ import type { ExecFileSyncOptions } from "node:child_process";
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { tryCatch } from "@openrouter/spawn-shared";
 import pkg from "../../package.json";
@@ -50,11 +51,14 @@ function restoreEnv(originalEnv: NodeJS.ProcessEnv) {
 
 describe("update-check", () => {
   let originalEnv: NodeJS.ProcessEnv;
+  let testHome: string;
   let consoleErrorSpy: ReturnType<typeof spyOn>;
   let processExitSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     originalEnv = mockEnv();
+    testHome = fs.mkdtempSync(path.join(os.tmpdir(), "spawn-update-check-"));
+    process.env.HOME = testHome;
     clearUpdateBackoff();
     clearUpdateChecked();
     consoleErrorSpy = spyOn(console, "error").mockImplementation(() => {});
@@ -66,6 +70,10 @@ describe("update-check", () => {
 
   afterEach(() => {
     restoreEnv(originalEnv);
+    fs.rmSync(testHome, {
+      recursive: true,
+      force: true,
+    });
     consoleErrorSpy.mockRestore();
     processExitSpy.mockRestore();
   });
@@ -486,9 +494,9 @@ describe("update-check", () => {
   //   - SPAWN_NO_AUTO_UPDATE=1 suppresses auto-install entirely
   describe("update policy", () => {
     it("auto-installs patch bumps even without SPAWN_AUTO_UPDATE=1", async () => {
-      // 1.0.20 -> 1.0.99 is a patch bump (same major.minor)
+      // 1.3.0 -> 1.3.99 is a patch bump (same major.minor)
       process.env.SPAWN_AUTO_UPDATE = undefined;
-      const fetchSpy = spyOn(global, "fetch").mockImplementation(() => Promise.resolve(new Response("1.0.99\n")));
+      const fetchSpy = spyOn(global, "fetch").mockImplementation(() => Promise.resolve(new Response("1.3.99\n")));
       const { executor } = await import("../update-check.js");
       const execFileSyncSpy = spyOn(executor, "execFileSync").mockImplementation((file: string) =>
         Buffer.from(file === "curl" ? FAKE_INSTALL_SCRIPT : ""),
@@ -508,9 +516,9 @@ describe("update-check", () => {
     });
 
     it("auto-installs minor bumps (same major)", async () => {
-      // 1.0.20 -> 1.2.0 is a minor bump — should auto-install
+      // 1.3.0 -> 1.4.0 is a minor bump — should auto-install
       process.env.SPAWN_AUTO_UPDATE = undefined;
-      const fetchSpy = spyOn(global, "fetch").mockImplementation(() => Promise.resolve(new Response("1.2.0\n")));
+      const fetchSpy = spyOn(global, "fetch").mockImplementation(() => Promise.resolve(new Response("1.4.0\n")));
       const { executor } = await import("../update-check.js");
       const execFileSyncSpy = spyOn(executor, "execFileSync").mockImplementation((file: string) =>
         Buffer.from(file === "curl" ? FAKE_INSTALL_SCRIPT : ""),
@@ -546,9 +554,9 @@ describe("update-check", () => {
     });
 
     it("auto-installs major bumps WITH SPAWN_AUTO_UPDATE=1", async () => {
-      // 1.0.20 -> 1.2.0 with opt-in env var
+      // 1.3.0 -> 2.0.0 with opt-in env var
       process.env.SPAWN_AUTO_UPDATE = "1";
-      const fetchSpy = spyOn(global, "fetch").mockImplementation(() => Promise.resolve(new Response("1.2.0\n")));
+      const fetchSpy = spyOn(global, "fetch").mockImplementation(() => Promise.resolve(new Response("2.0.0\n")));
       const { executor } = await import("../update-check.js");
       const execFileSyncSpy = spyOn(executor, "execFileSync").mockImplementation((file: string) =>
         Buffer.from(file === "curl" ? FAKE_INSTALL_SCRIPT : ""),

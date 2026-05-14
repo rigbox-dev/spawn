@@ -81,6 +81,13 @@ async function ensureDeleteCredentials(record: SpawnRecord): Promise<void> {
       await ensureDaytonaAuthenticated();
       break;
     }
+    case "rigbox": {
+      const { ensureRigCli } = await import("../rigbox/rigbox.js");
+      const { checkRigVersion } = await import("../rigbox/rig-runner.js");
+      await ensureRigCli();
+      await checkRigVersion();
+      break;
+    }
     default:
       break;
   }
@@ -193,6 +200,15 @@ async function execDeleteServer(record: SpawnRecord): Promise<boolean> {
         validateDaytonaConnection(conn);
         await ensureDaytonaAuthenticated();
         await daytonaDestroyServer(id);
+      });
+
+    case "rigbox":
+      return tryDelete(async () => {
+        const { destroyWorkspace, ensureRigCli } = await import("../rigbox/rigbox.js");
+        const { checkRigVersion } = await import("../rigbox/rig-runner.js");
+        await ensureRigCli();
+        await checkRigVersion();
+        await destroyWorkspace(id);
       });
 
     default:

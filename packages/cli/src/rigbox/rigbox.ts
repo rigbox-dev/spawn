@@ -8,7 +8,7 @@
 //      the NDJSON browser login event stream from `rig login` and renders
 //      events into spawn's UI. rig persists the API key.
 //
-//   2. `rig spawn <name> --catalog <recipe> --output json` to provision
+//   2. `rig workspace spawn -n <name> --catalog <recipe> --output json` to provision
 //      a workspace. Reads SpawnEvents from the stream; the `ready`
 //      event carries ssh_user and ssh_host.
 //
@@ -24,9 +24,11 @@ import type { Subscription, TierCapacity } from "./tiers.js";
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import * as v from "valibot";
+import { parseJsonWith } from "../shared/parse.js";
 import { getUserHome } from "../shared/paths.js";
 import { SSH_BASE_OPTS, SSH_INTERACTIVE_OPTS, spawnInteractive, validateRemotePath } from "../shared/ssh.js";
-import { ensureSshKeys, getSshKeyOpts } from "../shared/ssh-keys.js";
+import { ensureSshKeys, getSpawnKey, getSshKeyOpts, SPAWN_KEY_NAME } from "../shared/ssh-keys.js";
 import {
   getServerNameFromEnv,
   logInfo,
@@ -39,15 +41,26 @@ import {
 } from "../shared/ui.js";
 import {
   AiModeSchema,
+  AppListSchema,
   checkRigVersion,
   EnvSetSchema,
   LimitsSchema,
   RmSchema,
   runRig,
+  SshKeyAddedSchema,
+  SshKeyListSchema,
   streamRig,
   WhoamiSchema,
 } from "./rig-runner.js";
 import { capacityFromLimits, fallbackCapacityFromSubscription, resolveTier } from "./tiers.js";
+
+const T3CODE_RECIPE_ID = "t3code";
+const T3CODE_PUBLIC_NAME = "T3 Code";
+const T3CODE_PAIRING_TTL = "1h";
+const T3PairingResponseSchema = v.looseObject({
+  credential: v.optional(v.string()),
+  pairUrl: v.optional(v.string()),
+});
 
 // ── Module state ────────────────────────────────────────────────────
 
@@ -96,6 +109,7 @@ function getRigCmd(): string | null {
         "pipe",
         "ignore",
       ],
+      env: process.env,
     },
   );
   if (which.exitCode === 0) {
@@ -172,6 +186,7 @@ export async function authenticate(): Promise<void> {
     // "free" so tier resolution never silently up-tiers an unknown user.
     _state.subscription = whoami.subscription ?? "free";
     await fetchAndStashLimits();
+    await ensureRigboxSpawnSshKey();
     logInfo(`Logged in as ${whoami.user_email}`);
     return;
   }
@@ -216,6 +231,7 @@ export async function authenticate(): Promise<void> {
     _state.subscription = postLogin.subscription ?? "free";
   }
   await fetchAndStashLimits();
+  await ensureRigboxSpawnSshKey();
 }
 
 /**
@@ -235,6 +251,87 @@ async function fetchAndStashLimits(): Promise<void> {
     _state.limits = result.limits;
     _state.usage = result.usage;
   }
+}
+
+function getSshSha256Fingerprint(pubPath: string): string {
+  const result = Bun.spawnSync(
+    [
+      "ssh-keygen",
+      "-lf",
+      pubPath,
+    ],
+    {
+      stdio: [
+        "ignore",
+        "pipe",
+        "pipe",
+      ],
+    },
+  );
+  if (result.exitCode !== 0) {
+    return "";
+  }
+  const output = new TextDecoder().decode(result.stdout).trim();
+  return output.match(/\b(SHA256:[^\s]+)/)?.[1] ?? "";
+}
+
+function normalizeFingerprint(fingerprint: string | undefined): string {
+  return (fingerprint ?? "").trim().toLowerCase();
+}
+
+function keyNameForFingerprint(fingerprint: string): string {
+  const suffix = fingerprint
+    .replace(/^SHA256:/i, "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 8);
+  return suffix ? `${SPAWN_KEY_NAME}-${suffix}` : SPAWN_KEY_NAME;
+}
+
+async function ensureRigboxSpawnSshKey(): Promise<void> {
+  const spawnKey = getSpawnKey();
+  const fingerprint = getSshSha256Fingerprint(spawnKey.pubPath);
+  if (!fingerprint) {
+    logWarn(`Could not determine fingerprint for SSH key '${spawnKey.name}'`);
+    return;
+  }
+
+  const list = await runRig(
+    [
+      "ssh",
+      "ls",
+    ],
+    SshKeyListSchema,
+  ).catch((err) => {
+    logWarn(`Could not list Rigbox SSH keys: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  });
+  if (!list) {
+    return;
+  }
+
+  const normalizedFingerprint = normalizeFingerprint(fingerprint);
+  if (list.ssh_keys.some((key) => normalizeFingerprint(key.fingerprint) === normalizedFingerprint)) {
+    logInfo(`SSH key '${spawnKey.name}' already registered with Rigbox`);
+    return;
+  }
+
+  const name = list.ssh_keys.some((key) => key.name === SPAWN_KEY_NAME)
+    ? keyNameForFingerprint(fingerprint)
+    : SPAWN_KEY_NAME;
+  logStep(`Registering SSH key '${name}' with Rigbox...`);
+  await runRig(
+    [
+      "ssh",
+      "add",
+      "--name",
+      name,
+      "--file",
+      spawnKey.pubPath,
+    ],
+    SshKeyAddedSchema,
+  ).catch((err) => {
+    logWarn(`Could not register Spawn SSH key with Rigbox: ${err instanceof Error ? err.message : String(err)}`);
+  });
 }
 
 // ── Workspace lifecycle ─────────────────────────────────────────────
@@ -281,11 +378,11 @@ export async function createWorkspace(
   }
   // Tier sizing overrides rig's catalog-minimum default and gives the
   // workspace steady-state headroom from the start.
-  args.push("--ram", String(tier.ramMb), "--disk", String(tier.diskMb));
+  args.push("--ram", String(tier.ramMb), "--vcpu", String(tier.vcpuCount), "--disk", String(tier.diskMb));
 
   logStep(
     `Provisioning Rigbox workspace "${name}" on the ${tier.id} tier ` +
-      `(${tier.ramMb} MB RAM, ${tier.diskMb} MB disk)...`,
+      `(${tier.ramMb} MB RAM, ${tier.vcpuCount} vCPU, ${tier.diskMb} MB disk)...`,
   );
 
   let readyId: string | null = null;
@@ -385,6 +482,152 @@ export async function setForwardedOpenRouterKey(openRouterKey: string): Promise<
     ],
     AiModeSchema,
   );
+}
+
+function withHttpsScheme(url: string): string {
+  if (/^https?:\/\//i.test(url)) {
+    return url;
+  }
+  return `https://${url}`;
+}
+
+export function buildRigboxPairingUrl(baseUrl: string, token: string): string {
+  const url = new URL("/pair", withHttpsScheme(baseUrl));
+  url.searchParams.delete("token");
+  url.hash = new URLSearchParams([
+    [
+      "token",
+      token,
+    ],
+  ]).toString();
+  return url.toString();
+}
+
+type RigboxAppSummary = Awaited<ReturnType<typeof fetchWorkspaceApps>>["apps"][number];
+
+function isT3CodeApp(app: RigboxAppSummary): boolean {
+  return app.name === T3CODE_PUBLIC_NAME || app.port === 3773 || app.url.includes("t3code-");
+}
+
+function credentialPairingUrl(app: RigboxAppSummary): string | null {
+  const token =
+    app.credentials?.desktop_bootstrap_token ??
+    app.credentials?.pairing_token ??
+    app.credentials?.t3code_pairing_token ??
+    null;
+  if (!token) {
+    return null;
+  }
+  return buildRigboxPairingUrl(app.url, token);
+}
+
+async function fetchWorkspaceApps() {
+  if (!_state.workspaceId) {
+    throw new Error("Workspace not yet created");
+  }
+  return runRig(
+    [
+      "app",
+      "ls",
+      "-w",
+      _state.workspaceId,
+    ],
+    AppListSchema,
+  );
+}
+
+async function runServerCapture(cmd: string, timeoutSecs = 30): Promise<string> {
+  if (!cmd || /\0/.test(cmd)) {
+    throw new Error("Invalid command: must be non-empty and must not contain null bytes");
+  }
+  const target = sshTarget();
+  const keyOpts = getSshKeyOpts(await ensureSshKeys());
+  const args = [
+    "ssh",
+    ...SSH_BASE_OPTS,
+    ...keyOpts,
+    target,
+    `bash -lc ${shellQuote(cmd)}`,
+  ];
+  const proc = Bun.spawn(args, {
+    stdio: [
+      "ignore",
+      "pipe",
+      "pipe",
+    ],
+  });
+  const timer = setTimeout(() => proc.kill(), timeoutSecs * 1000);
+  const stdoutPromise = new Response(proc.stdout).text();
+  const stderrPromise = new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+  const stdout = await stdoutPromise;
+  const stderr = await stderrPromise;
+  if (exitCode !== 0) {
+    throw new Error(`ssh command exited ${exitCode}: ${stderr.trim() || cmd.slice(0, 120)}`);
+  }
+  return stdout;
+}
+
+async function issueT3CodePairingUrl(baseUrl: string): Promise<string> {
+  const cmd = [
+    "set -euo pipefail",
+    'if [ -x /home/developer/.npm-global/bin/t3 ]; then T3=/home/developer/.npm-global/bin/t3; else T3="$(command -v t3)"; fi',
+    [
+      '"$T3"',
+      "auth",
+      "pairing",
+      "create",
+      "--ttl",
+      T3CODE_PAIRING_TTL,
+      "--base-url",
+      shellQuote(withHttpsScheme(baseUrl)),
+      "--json",
+      "--base-dir",
+      "/home/developer/.t3",
+    ].join(" "),
+  ].join("; ");
+  const raw = (await runServerCapture(cmd)).trim();
+  const parsed = parseJsonWith(raw, T3PairingResponseSchema);
+  if (parsed.pairUrl && parsed.pairUrl.length > 0) {
+    return parsed.pairUrl;
+  }
+  if (parsed.credential && parsed.credential.length > 0) {
+    return buildRigboxPairingUrl(baseUrl, parsed.credential);
+  }
+  throw new Error("T3 Code returned no pairing URL");
+}
+
+export async function showRecipeAccessHints(recipeId: string | undefined): Promise<void> {
+  if (recipeId !== T3CODE_RECIPE_ID || !_state.workspaceId) {
+    return;
+  }
+
+  const apps = await fetchWorkspaceApps().catch((err) => {
+    logWarn(`Could not look up Rigbox app URL for T3 Code: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  });
+  const app = apps?.apps.find(isT3CodeApp);
+  if (!app) {
+    logWarn("T3 Code is running, but Spawn could not find its Rigbox app URL.");
+    return;
+  }
+
+  const freshPairingUrl = await issueT3CodePairingUrl(app.url).catch((err) => {
+    logWarn(`Could not issue a fresh T3 Code pairing token: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  });
+  const pairingUrl = freshPairingUrl ?? credentialPairingUrl(app);
+  if (!pairingUrl) {
+    logWarn(`Open T3 Code at ${withHttpsScheme(app.url)} and create a pairing token from the app if prompted.`);
+    return;
+  }
+
+  logStep("T3 Code pairing URL");
+  logInfo(`  ${pairingUrl}`);
+  if (freshPairingUrl) {
+    logInfo(`  Pairing token expires in ${T3CODE_PAIRING_TTL}.`);
+  }
 }
 
 /**

@@ -1423,8 +1423,7 @@ function createAgents(runner: CloudRunner): Record<string, AgentConfig> {
         remotePort: 3773,
         browserUrl: (localPort: number) => `http://localhost:${localPort}`,
       },
-      updateCmd:
-        'export PATH="$HOME/.npm-global/bin:$HOME/.bun/bin:$PATH"; ' + "npm install -g ${_NPM_G_FLAGS:-} t3@latest",
+      updateCmd: `${NPM_AUTO_UPDATE_SETUP} && ` + "npm install -g $_NPM_G_FLAGS t3@latest",
     },
 
     cursor: {

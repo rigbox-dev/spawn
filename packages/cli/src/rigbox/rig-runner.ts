@@ -192,6 +192,39 @@ export const SshInfoSchema = v.looseObject({
 });
 export type SshInfo = v.InferOutput<typeof SshInfoSchema>;
 
+/** `rig ssh ls --output json` — registered account SSH keys. */
+const SshKeySummarySchema = v.looseObject({
+  id: v.string(),
+  name: v.string(),
+  fingerprint: v.optional(v.string()),
+  created_at: v.string(),
+});
+export const SshKeyListSchema = v.looseObject({
+  event: v.literal("ssh_keys"),
+  ssh_keys: v.array(SshKeySummarySchema),
+});
+export const SshKeyAddedSchema = v.looseObject({
+  event: v.literal("ssh_key_added"),
+  name: v.string(),
+});
+
+/** `rig app ls --output json` — list apps, optionally scoped to one workspace. */
+const AppSummarySchema = v.looseObject({
+  id: v.string(),
+  name: v.string(),
+  workspace_id: v.optional(v.string()),
+  url: v.string(),
+  port: v.number(),
+  status: v.string(),
+  visibility: v.optional(v.string()),
+  credentials: v.optional(v.record(v.string(), v.string())),
+});
+export const AppListSchema = v.looseObject({
+  event: v.literal("apps"),
+  apps: v.array(AppSummarySchema),
+});
+export type AppList = v.InferOutput<typeof AppListSchema>;
+
 // ── Error event ────────────────────────────────────────────────
 
 export const ErrorEventSchema = v.looseObject({
@@ -279,7 +312,7 @@ export interface Semver {
 export const RIG_MIN_VERSION: Semver = {
   major: 0,
   minor: 6,
-  patch: 0,
+  patch: 8,
 };
 
 /** Parse `rig --version` output. Accepts `rigbox X.Y.Z` and
@@ -341,6 +374,7 @@ export async function checkRigVersion(rigPath = "rig"): Promise<void> {
           "pipe",
           "pipe",
         ],
+        env: process.env,
       },
     ),
   );
