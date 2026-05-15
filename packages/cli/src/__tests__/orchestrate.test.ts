@@ -916,4 +916,28 @@ describe("runOrchestration", () => {
       exitSpy.mockRestore();
     });
   });
+
+  describe("cloud-owned interactive session", () => {
+    it("skips SSH handoff when the cloud already serves the app", async () => {
+      const cloud = createMockCloud({
+        cloudName: "rigbox",
+        cloudLabel: "Rigbox",
+        skipInteractiveSession: true,
+      });
+      const agent = createMockAgent({
+        name: "T3 Code",
+        launchCmd: mock(() => "t3 --port 3773"),
+      });
+
+      await runOrchestrationSafe(cloud, agent, "t3code");
+
+      expect(cloud.createServer).toHaveBeenCalledTimes(1);
+      expect(cloud.waitForReady).toHaveBeenCalledTimes(1);
+      expect(agent.launchCmd).toHaveBeenCalledTimes(1);
+      expect(cloud.interactiveSession).toHaveBeenCalledTimes(0);
+      expect(capturedExitCode).toBe(0);
+      stderrSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+  });
 });

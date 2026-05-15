@@ -16,7 +16,7 @@ import pkg from "../../package.json" with { type: "json" };
 import { runOrchestration } from "../shared/orchestrate.js";
 import { initTelemetry } from "../shared/telemetry.js";
 import { logInfo, logStep } from "../shared/ui.js";
-import { agents, resolveAgent, rigboxRecipeFor } from "./agents.js";
+import { agents, resolveAgent, rigboxRecipeFor, rigboxRecipeOwnsSession } from "./agents.js";
 import {
   authenticate,
   createWorkspace,
@@ -69,6 +69,10 @@ async function main() {
     skipAgentConfigure: true,
     // Rigbox workspaces do not run cloud-init the way Hetzner/DO do.
     skipCloudInit: true,
+    // Some Rigbox catalog recipes are hosted apps/services. T3 Code is
+    // already listening on 3773 after recipe install, so launching its CLI
+    // again over SSH races the running service and fails with EADDRINUSE.
+    skipInteractiveSession: rigboxRecipeOwnsSession(agentName),
     runner: {
       runServer,
       uploadFile,

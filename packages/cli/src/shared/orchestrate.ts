@@ -145,6 +145,8 @@ export interface CloudOrchestrator {
   skipAgentConfigure?: boolean;
   /** When true, skip cloud-init wait — just wait for SSH (e.g. minimal-tier agent with tarball). */
   skipCloudInit?: boolean;
+  /** When true, provisioning completed the user-facing app/session and Spawn should not launch the agent over SSH. */
+  skipInteractiveSession?: boolean;
   authenticate(): Promise<void>;
   checkAccountReady?(): Promise<void>;
   /** DigitalOcean: blocking readiness (account, SSH, OpenRouter) before region/size. */
@@ -1011,6 +1013,17 @@ async function postInstall(
     } else {
       logInfo("Headless mode — provisioning complete. Skipping interactive session.");
     }
+    if (tunnelHandle) {
+      tunnelHandle.stop();
+    }
+    if (cloud.cloudName !== "local") {
+      await pullChildHistory(cloud.runner, spawnId);
+    }
+    process.exit(0);
+  }
+
+  if (cloud.skipInteractiveSession) {
+    logInfo(`${cloud.cloudLabel} is already serving ${agent.name}; skipping interactive SSH handoff.`);
     if (tunnelHandle) {
       tunnelHandle.stop();
     }

@@ -39,8 +39,16 @@ export const SPAWN_TO_RIGBOX_RECIPE: Record<string, string> = {
   t3code: "t3code",
 };
 
+const RIGBOX_RECIPE_OWNS_SESSION = new Set([
+  "t3code",
+]);
+
 export function rigboxRecipeFor(agentName: string): string | undefined {
   return SPAWN_TO_RIGBOX_RECIPE[agentName];
+}
+
+export function rigboxRecipeOwnsSession(agentName: string): boolean {
+  return RIGBOX_RECIPE_OWNS_SESSION.has(agentName);
 }
 
 export function resolveAgent(name: string): ReturnType<typeof baseResolveAgent> {
